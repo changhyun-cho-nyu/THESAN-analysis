@@ -20,6 +20,7 @@ import os
 import numpy as np
 
 from . import bh_logs, history, obs
+from .units import SEC_PER_YEAR
 from .plotstyle import COMPONENT_COLORS as C
 from .plotstyle import PALETTE, add_redshift_axis, label_panel, plt, savefig, shade_band
 
@@ -51,9 +52,12 @@ def plot_overview(hist, units, outpath, radius=None, title=None, logs=None):
 
     # 1. black hole mass ----------------------------------------------------
     a = ax[0]
-    a.plot(t, np.where(hist.get("bh_mass_msun", np.nan) > 0, hist["bh_mass_msun"], np.nan), color=C["bh"], label=r"$M_{\rm BH}$ (in aperture)")
+    a.plot(t, np.where(hist.get("bh_mass_msun", np.nan) > 0, hist["bh_mass_msun"], np.nan), color=C["bh"], label=r"$M_{\rm BH}$ (the galaxy's BH)")
+    if "bh_mass_sum_msun" in hist:
+        a.plot(t, np.where(hist["bh_mass_sum_msun"] > 0, hist["bh_mass_sum_msun"], np.nan), color=C["bh"], ls=":", lw=1.0,
+               label=r"sum of BHs within %g kpc" % R)
     if "bh_mass_max_msun" in hist:
-        a.plot(t, hist["bh_mass_max_msun"], color=C["bh"], ls="--", lw=1.0, label="most massive BH")
+        a.plot(t, hist["bh_mass_max_msun"], color=C["bh"], ls="--", lw=1.0, label="most massive BH in the snapshot")
     if logs and logs.get("blackholes", {}).get("time", np.zeros(0)).size:
         b = logs["blackholes"]
         a.plot(units.age_gyr(b["time"]), b["mass_bh"] * units.mass_to_msun, color=PALETTE["grey"], lw=0.8, zorder=0, label="all BHs (log)")
@@ -114,7 +118,7 @@ def plot_overview(hist, units, outpath, radius=None, title=None, logs=None):
         a.plot(units.age_gyr(b["time"]), b["mdot_msun_per_yr"], color=PALETTE["grey"], lw=0.7, zorder=0, label="blackholes.txt")
     y = hist.get("bh_mdot_msun_per_yr")
     if y is not None:
-        a.plot(t, np.where(y > 0, y, np.nan), color=C["bh"], marker="o", ms=2.5, label="snapshots")
+        a.plot(t, np.where(y > 0, y, np.nan), color=C["bh"], marker="o", ms=2.5, label="the galaxy's BH (snapshots)")
     a.set_yscale("log")
     a.set_ylabel(r"$\dot M_{\rm BH}$ [M$_\odot$ yr$^{-1}$]")
     a.legend(loc="lower right")
@@ -208,7 +212,7 @@ def collect_logs(output_dir, stdout_path=None, run_dir=None):
     """Read every ASCII log the run produced, tolerating missing ones.
 
     Returns a dict with keys 'blackholes', 'sfr', 'details', 'bipolar',
-    'mergers', 'energy', 'injection' -- each an empty-array dict if the
+    'mergers', 'energy', 'injection', 'ledger' -- each an empty-array dict if the
     corresponding file is not there.
     """
     out = {}
@@ -223,7 +227,9 @@ def collect_logs(output_dir, stdout_path=None, run_dir=None):
         paths = [stdout_path] if isinstance(stdout_path, str) else list(stdout_path)
     else:
         paths = bh_logs.find_stdout(run_dir or os.path.dirname(output_dir.rstrip("/")))
-    out["injection"] = bh_logs.parse_bipolar_stdout(paths)
+    scanned = bh_logs.scan_stdout(paths)  # one pass over the stdout files
+    out["injection"] = scanned["injection"]
+    out["ledger"] = scanned["ledger"]
     out["stdout_path"] = paths
     return out
 
@@ -398,18 +404,15 @@ def plot_stellar_age_distribution(snap, centre, outpath, radius_kpc=30.0, title=
     return savefig(fig, outpath)
 
 
-def plot_energy_budget(logs, units, outpath, hist=None, params=None, title=None):
-    """Global energy bookkeeping from energy.txt, plus the real AGN budget.
+def plot_energy_budget(logs, units, outpath, hist=None, params=None, title=None, summary=None):
+    """Global energies from energy.txt, and the AGN energy budget of the box.
 
-    Panel (a) is genuinely from ``energy.txt``.  Panels (b) and (c) are not:
-    ``energy.txt``'s ``e_injected`` column is ``All.EgyInjection``, a mesh
-    refinement/derefinement energy-conservation tracker that no black-hole
-    routine ever writes to (see :func:`bh_logs.agn_cumulative_energy`) -- an
-    earlier version of this function plotted it here as if it were the AGN
-    energy budget, which is why these panels used to show noise near zero
-    instead of a rising curve.  The correct source is the stdout injection
-    counters (``BH_BIPOLAR_INJECTION*`` builds) or the snapshot's
-    ``BH_CumEgyInjection_QM``/``_RM`` fields (``BH_THERMALFEEDBACK`` builds).
+    Panel (a) is energy.txt.  Panels (b) and (c) are the AGN feedback energy from
+    :func:`bh_logs.agn_energy_sources` -- the ledger, the stdout counters or the
+    snapshots' BH_CumEgyInjection_QM, whichever the build provides (energy.txt's
+    ``e_injected`` is mesh bookkeeping, not AGN energy) -- against the
+    channel-by-channel expectation of :func:`bh_logs.expected_agn_energy`.
+    ``summary`` (from :func:`diagnostics.model_summary`) supplies the Config.
     """
     e = logs["energy"]
     if e["time"].size == 0:
@@ -429,39 +432,50 @@ def plot_energy_budget(logs, units, outpath, hist=None, params=None, title=None)
     a.legend()
     label_panel(a, "(a) global energies")
 
-    t_agn, e_agn, src = bh_logs.agn_cumulative_energy(hist, logs.get("injection"), units)
+    src = bh_logs.agn_energy_sources(hist, logs, units)
+    rel, dep = src["released"], src["deposited"]
+    exp = None
+    if rel is not None:
+        exp = bh_logs.expected_agn_energy(rel[0], logs["blackholes"], params, (summary or {}).get("config"), units)
 
     a = ax[1]
-    if t_agn is not None:
-        a.plot(t_agn, e_agn, color=PALETTE["vermillion"])
+    if rel is not None:
+        a.plot(rel[0], rel[1], color=PALETTE["vermillion"], lw=1.6, label=rel[2])
+        if dep is not None:
+            a.plot(dep[0], dep[1], color=PALETTE["black"], ls="--", lw=1.0, label=dep[2])
+        for (lab, tc, ec), col in zip(src["components"], (PALETTE["orange"], PALETTE["purple"], PALETTE["blue"])):
+            if len(src["components"]) > 1:
+                a.plot(tc, ec, color=col, lw=0.8, alpha=0.8, label=lab)
+        if exp is not None:
+            if np.allclose(exp["lo"], exp["hi"]):
+                a.plot(rel[0], exp["lo"], color=PALETTE["grey"], ls=":", lw=1.2, label=exp["label"])
+            else:
+                a.fill_between(rel[0], exp["lo"], exp["hi"], where=exp["hi"] > 0, color=PALETTE["grey"], alpha=0.25,
+                               label=exp["label"])
         a.set_yscale("log")
-        a.text(0.03, 0.05, "source: %s" % src, transform=a.transAxes, fontsize=6.5, color=PALETTE["grey"])
+        # The first steps carry zero energy; keep the axis on the five decades that matter.
+        top = float(np.nanmax(rel[1])) if np.nanmax(rel[1]) > 0 else 1.0
+        a.set_ylim(top * 1e-5, top * 3)
+        a.legend(fontsize=6, loc="lower right")
     else:
-        a.text(0.5, 0.5, "no AGN energy source available\n(no injection counters, no BH_CumEgyInjection_*)",
+        a.text(0.5, 0.5, "no AGN energy source in this run\n(no ledger, no injection counters,\nno BH_CumEgyInjection_*)",
                ha="center", va="center", transform=a.transAxes, fontsize=7.5, color=PALETTE["grey"])
     a.set_xlabel("age of universe [Gyr]")
     a.set_ylabel(r"$E_{\rm AGN}$ [erg]")
-    label_panel(a, "(b) cumulative injected energy")
+    label_panel(a, "(b) cumulative AGN energy (box)")
 
     a = ax[2]
-    b = logs["blackholes"]
-    if b["time"].size and t_agn is not None and t_agn.size > 1:
-        # dE/dt of the injection vs eps_f eps_r Mdot c^2, the theoretical rate.
-        from .units import CLIGHT, SEC_PER_YEAR, SOLAR_MASS
-
-        eps_r = float(params.get("BlackHoleRadiativeEfficiency", 0.1)) if params else 0.1
-        eps_f = float(params.get("BlackHoleFeedbackFactor", 0.05)) if params else 0.05
-
-        dE = np.gradient(e_agn, np.maximum(t_agn * 1e9 * SEC_PER_YEAR, 1))
-        a.plot(t_agn, np.abs(dE), color=PALETTE["vermillion"], lw=0.8, label=r"$dE_{\rm AGN}/dt$")
-        mdot_cgs = np.interp(t_agn, units.age_gyr(b["time"]), b["mdot_msun_per_yr"]) * SOLAR_MASS / SEC_PER_YEAR
-        a.plot(t_agn, eps_f * eps_r * mdot_cgs * CLIGHT ** 2, color=PALETTE["grey"], ls="--",
-               label=r"$\epsilon_f\epsilon_r\,\dot Mc^2$ ($\epsilon_f$=%.2g, $\epsilon_r$=%.2g)" % (eps_f, eps_r))
+    if rel is not None and rel[0].size > 1:
+        ts = np.maximum(rel[0] * 1e9 * SEC_PER_YEAR, 1.0)
+        a.plot(rel[0], np.abs(np.gradient(rel[1], ts)), color=PALETTE["vermillion"], lw=0.8, label=r"$dE_{\rm released}/dt$")
+        if exp is not None:
+            a.plot(rel[0], np.abs(np.gradient(exp["hi"], ts)), color=PALETTE["grey"], ls="--", lw=1.0,
+                   label="expected (%s)" % exp["note"])
         a.set_yscale("log")
         a.legend(loc="lower right", fontsize=7)
     a.set_xlabel("age of universe [Gyr]")
     a.set_ylabel(r"power [erg s$^{-1}$]")
-    label_panel(a, "(c) injection power")
+    label_panel(a, "(c) AGN power")
 
     if title:
         fig.suptitle(title, y=1.02)

@@ -19,11 +19,11 @@ because they test things only this branch does:
 The last one is the only test that looks at the *outcome* rather than the
 bookkeeping, and it is the one worth trusting.
 
-Cross-references to the code:
-    blackhole_bipolar_injection.cc:736/741  the stdout counters
-    blackhole_mdot.cc:277-292               the Eddington mode switch
-    blackhole_mdot.cc:504-582               alpha-disc rate (Omega, Q)
-    blackhole_mdot.cc:597-695               torque-limited rate (f_disc, f_gas)
+Cross-references to the code (arepo ``Arepo2-TMZ-newbh`` at ``0b41480f0b``):
+    blackhole_bipolar_injection.cc:700/705  the stdout counters
+    blackhole_mdot.cc:276-291               the Eddington mode switch
+    blackhole_mdot.cc:451-530               alpha-disc rate (Omega, Q)
+    blackhole_mdot.cc:546-645               torque-limited rate (f_disc, f_gas)
 """
 
 from __future__ import annotations
@@ -122,9 +122,9 @@ def model_summary(snap):
     # split.  blackhole_bondi_rate()/blackhole_alpha_disk_rate()/
     # blackhole_torque_limited_rate() fprintf their *own* local "mdot" before
     # returning it to blackhole_calculate_mdot(), which then still applies the
-    # Eddington cap (blackhole_mdot.cc:189-190) and, if BH_EXACT_INTEGRATION is
+    # Eddington cap (blackhole_mdot.cc:187-188) and, if BH_EXACT_INTEGRATION is
     # on, throws that value away entirely and substitutes the analytic
-    # sub-step-averaged accretion rate (blackhole_mdot.cc:162-217) -- so the
+    # sub-step-averaged accretion rate (blackhole_mdot.cc:159-216) -- so the
     # logged "mdot" is the raw pre-cap, pre-integration estimate, not what
     # happened.  See plot_accretion_internals / check_mode_switch.
     mdot_caveats = [f for f in ("BH_EXACT_INTEGRATION", "BH_ADIOS_WIND", "BH_PRESSURE_CRITERION") if f in cfg]
@@ -474,10 +474,10 @@ def plot_accretion_internals(details, units, outpath, params=None, summary=None,
 
     ``blackhole_details``'s "mdot" column is logged *inside*
     ``blackhole_bondi_rate()`` (or the alpha-disc/torque equivalent), before
-    the caller applies the Eddington cap (``blackhole_mdot.cc:189-190``) and,
+    the caller applies the Eddington cap (``blackhole_mdot.cc:187-188``) and,
     if ``BH_EXACT_INTEGRATION`` is compiled in, before that cap value is
     itself discarded in favour of an analytically sub-step-averaged rate
-    (``blackhole_mdot.cc:162-217``).  So the raw column can run many orders of
+    (``blackhole_mdot.cc:159-216``).  So the raw column can run many orders of
     magnitude above the Eddington rate even though the black hole never
     actually accreted anywhere near that fast -- every panel here therefore
     also shows ``mdot`` clipped at ``BlackHoleEddingtonFactor * mdot_Edd``,
@@ -737,7 +737,8 @@ def plot_collimation(snap, centre, axis, outpath, rmax_kpc=10.0, rmin_kpc=0.0, t
     nH = gas["Density"][sel] * u.density_to_nH_cgs(snap.a)
 
     vc = np.average(gas["Velocities"][sel], axis=0, weights=gas["Masses"][sel])
-    dv = (gas["Velocities"][sel] - vc) * u.peculiar_velocity_to_kms(snap.a)
+    # peculiar velocity plus the Hubble flow H(a) r (rel is in physical kpc)
+    dv = (gas["Velocities"][sel] - vc) * u.peculiar_velocity_to_kms(snap.a) + u.hubble_kms_per_kpc(snap.a) * rel
     rhat = rel / r[:, None]
     vr = np.sum(rhat * dv, axis=1)
 
@@ -837,7 +838,7 @@ def plot_collimation(snap, centre, axis, outpath, rmax_kpc=10.0, rmin_kpc=0.0, t
 def check_mode_switch(details, inj, units, params, summary=None):
     """Does the observed thermal/kinetic split match the Eddington threshold?
 
-    The switch (blackhole_mdot.cc:277-292) sends a BH to the *thermal* channel
+    The switch (blackhole_mdot.cc:276-291) sends a BH to the *thermal* channel
     when its accretion rate exceeds ``BHBipolarInjEddThreshold`` times the
     Eddington rate, and to the *kinetic* channel otherwise.  We can predict the
     split from ``blackhole_details`` and compare against the counters the
@@ -850,7 +851,7 @@ def check_mode_switch(details, inj, units, params, summary=None):
     check divided by it on the assumption that the switch does; that made the
     two diagnostics disagree with each other.)  ``mdot`` is additionally
     clipped at ``BlackHoleEddingtonFactor * mdot_Edd``, matching the cap the
-    code itself applies (blackhole_mdot.cc:189-190) before the switch is
+    code itself applies (blackhole_mdot.cc:187-188) before the switch is
     evaluated -- but this cannot fix a build with ``BH_EXACT_INTEGRATION``
     (see the module docstring): there the value the switch actually acts on
     is a sub-step time average that ``blackhole_details`` never logs (only the
@@ -910,7 +911,7 @@ def check_mode_switch(details, inj, units, params, summary=None):
             if "BH_EXACT_INTEGRATION" in caveats:
                 lines.append("           expected for this build: BH_EXACT_INTEGRATION is on, so the mdot")
                 lines.append("           the switch actually compares to BHBipolarInjEddThreshold is a")
-                lines.append("           sub-step time average (blackhole_mdot.cc:162-217) that never")
+                lines.append("           sub-step time average (blackhole_mdot.cc:159-216) that never")
                 lines.append("           reaches blackhole_details -- only the pre-integration instantaneous")
                 lines.append("           rate does.  Not fixable from these logs; blackholes.txt's aggregate")
                 lines.append("           mdot (fig 09) is the one quantity guaranteed to match what happened.")
@@ -928,28 +929,30 @@ def check_mode_switch(details, inj, units, params, summary=None):
 # ---------------------------------------------------------------------------
 
 
-def plot_conservation(logs, units, outpath, params=None, hist=None, title=None):
+def plot_conservation(logs, units, outpath, params=None, hist=None, title=None, summary=None):
     """Cross-check the mass and energy books across independent outputs.
-
-    Three checks, each of which has caught a real bug at some point:
 
       1. ``sum(BH_Mass)`` from blackholes.txt against the time integral of
          ``sum(BH_Mdot)`` -- these must agree up to mergers and the (1-eps_r)
          radiative loss;
-      2. the true AGN injected energy (see :func:`bh_logs.agn_cumulative_energy`
-         -- *not* energy.txt's ``e_injected``, which is unrelated hydro
-         bookkeeping) against eps_f eps_r Mdot c^2 accumulated over the run;
-      3. the total BH count against the number of mergers, which must only
-         ever decrease by mergers.
+      2. their ratio over time;
+      3. the AGN energy released by the BHs (:func:`bh_logs.agn_energy_sources`,
+         a box total like blackholes.txt) over what the parameters predict
+         channel by channel (:func:`bh_logs.expected_agn_energy`) -- 1, or inside
+         the band with the mode switch -- and, with the ledger, the fraction of
+         it that reached the gas (below 1 only through the 5e9 K ceiling or the
+         kick velocity cap).
+
+    eps_r comes from the run's parameters; without them the (1-eps_r) lines and
+    the prediction are left out rather than drawn for a guessed value.
     """
-    b, e = logs["blackholes"], logs["energy"]
+    b = logs["blackholes"]
     if b["time"].size == 0:
         return None
 
-    from .units import CLIGHT, SEC_PER_YEAR, SOLAR_MASS
-
     t = units.age_gyr(b["time"])
     fig, ax = plt.subplots(1, 3, figsize=(13.0, 3.9))
+    eps_r = float(params["BlackHoleRadiativeEfficiency"]) if params and "BlackHoleRadiativeEfficiency" in params else None
 
     a = ax[0]
     m = b["mass_bh"] * units.mass_to_msun
@@ -959,8 +962,8 @@ def plot_conservation(logs, units, outpath, params=None, hist=None, title=None):
     integ[1:] = np.cumsum(0.5 * (rate[1:] + rate[:-1]) * dt_yr)
     a.plot(t, m - m[0], color=C["bh"], label=r"$\Delta\sum M_{\rm BH}$ (log)")
     a.plot(t, integ, color=PALETTE["vermillion"], ls="--", label=r"$\int\sum\dot M\,dt$")
-    eps_r = float(params.get("BlackHoleRadiativeEfficiency", 0.1)) if params else 0.1
-    a.plot(t, (1.0 - eps_r) * integ, color=PALETTE["grey"], ls=":", label=r"$(1-\epsilon_r)\int\dot M\,dt$")
+    if eps_r is not None:
+        a.plot(t, (1.0 - eps_r) * integ, color=PALETTE["grey"], ls=":", label=r"$(1-\epsilon_r)\int\dot M\,dt$")
     a.set_yscale("log")
     a.set_xlabel("age [Gyr]")
     a.set_ylabel(r"mass grown [M$_\odot$]")
@@ -973,13 +976,12 @@ def plot_conservation(logs, units, outpath, params=None, hist=None, title=None):
             ratio = np.where(integ > 0, (m - m[0]) / integ, np.nan)
         a.plot(t, ratio, color=PALETTE["purple"])
         a.axhline(1.0, color=PALETTE["grey"], ls="--", lw=1.0)
-        a.axhline(1.0 - eps_r, color=PALETTE["vermillion"], ls=":", lw=1.0, label=r"$1-\epsilon_r$")
-        a.legend(fontsize=7)
+        if eps_r is not None:
+            a.axhline(1.0 - eps_r, color=PALETTE["vermillion"], ls=":", lw=1.0, label=r"$1-\epsilon_r$")
+            a.legend(fontsize=7)
         # A BH-BH merger adds the secondary's whole mass to sum(BH_Mass) in one
         # step without contributing to integ(Mdot), so the ratio legitimately
-        # spikes well above 1 at a merger -- a fixed (0, 2) ceiling used to
-        # clip that spike and make it look like clipped/broken data instead of
-        # the real, documented "up to mergers" caveat above.
+        # spikes above 1 at a merger; do not clip it.
         finite = ratio[np.isfinite(ratio)]
         ymax = max(2.0, float(np.nanpercentile(finite, 99.5)) * 1.1) if finite.size else 2.0
         a.set_ylim(0, ymax)
@@ -988,29 +990,66 @@ def plot_conservation(logs, units, outpath, params=None, hist=None, title=None):
     label_panel(a, "(b) growth ratio")
 
     a = ax[2]
-    te, e_agn, src = bh_logs.agn_cumulative_energy(hist, logs.get("injection"), units)
-    if te is not None:
-        a.plot(te, e_agn, color=PALETTE["vermillion"], label=src)
-        eps_f = float(params.get("BlackHoleFeedbackFactor", 0.05)) if params else 0.05
-        mdot_cgs = np.interp(te, t, rate) * SOLAR_MASS / SEC_PER_YEAR
-        pred = np.zeros_like(te)
-        dts = np.diff(te) * 1.0e9 * SEC_PER_YEAR
-        p = eps_f * eps_r * mdot_cgs * CLIGHT ** 2
-        pred[1:] = np.cumsum(0.5 * (p[1:] + p[:-1]) * dts)
-        a.plot(te, pred, color=PALETTE["grey"], ls="--", label=r"$\epsilon_f\epsilon_r\int\dot Mc^2dt$")
-        a.set_yscale("log")
+    src = bh_logs.agn_energy_sources(hist, logs, units)
+    rel, dep = src["released"], src["deposited"]
+    drew = False
+    if rel is not None:
+        exp = bh_logs.expected_agn_energy(rel[0], b, params, (summary or {}).get("config"), units)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            if exp is not None:
+                a.plot(rel[0], np.where(exp["hi"] > 0, rel[1] / exp["hi"], np.nan), color=PALETTE["vermillion"],
+                       label="released / expected" + ("" if np.allclose(exp["lo"], exp["hi"]) else " (upper)"))
+                if not np.allclose(exp["lo"], exp["hi"]):
+                    a.plot(rel[0], np.where(exp["lo"] > 0, rel[1] / exp["lo"], np.nan), color=PALETTE["vermillion"],
+                           ls=":", label="released / expected (lower)")
+                drew = True
+            if dep is not None:
+                a.plot(dep[0], np.where(rel[1] > 0, dep[1] / rel[1], np.nan), color=PALETTE["black"], ls="--",
+                       label="deposited / released (ledger)")
+                drew = True
+    if drew:
+        a.axhline(1.0, color=PALETTE["grey"], lw=0.8)
+        a.set_ylim(0, 2)
         a.legend(fontsize=6.5, loc="lower right")
+        a.text(0.03, 0.80, "source: %s" % src["source"], transform=a.transAxes, fontsize=6.5, color=PALETTE["grey"], va="top")
     else:
-        a.text(0.5, 0.5, "no AGN energy source available", ha="center", va="center",
-               transform=a.transAxes, fontsize=7.5, color=PALETTE["grey"])
+        a.text(0.5, 0.5, "no AGN energy source, or no parameters\nto predict it from",
+               ha="center", va="center", transform=a.transAxes, fontsize=7.5, color=PALETTE["grey"])
     a.set_xlabel("age [Gyr]")
-    a.set_ylabel(r"$E$ [erg]")
-    label_panel(a, "(c) injected energy budget")
+    a.set_ylabel("ratio")
+    label_panel(a, "(c) AGN energy book")
 
     if title:
         fig.suptitle(title, y=1.02)
     fig.tight_layout()
     return savefig(fig, outpath)
+
+
+def ledger_report(ledger, units):
+    """One-screen summary of the LOCAL_INJECTION BH LEDGER.  Returns a string."""
+    if ledger is None or not np.size(ledger.get("time", [])):
+        return "LOCAL_INJECTION BH LEDGER: no ledger lines (needs LOCAL_INJECTION_BLACK_HOLES + LOCAL_INJECTION_BH_LEDGER)."
+    E = units.energy_to_erg
+    tot = {k: float(np.nansum(ledger[k])) for k in bh_logs.LEDGER_COLS if k != "dp_ratio"}
+    released = tot["drained_iso"] + tot["drained_coll"] + tot["drained_kin"]
+    lines = [
+        "LOCAL_INJECTION BH LEDGER summary (%d steps)" % ledger["time"].size,
+        "  released    iso %.4g  coll %.4g  kin %.4g  erg   (total %.4g erg)"
+        % (tot["drained_iso"] * E, tot["drained_coll"] * E, tot["drained_kin"] * E, released * E),
+        "  thermal     asked %.4g  applied %.4g erg" % (tot["therm_asked"] * E, tot["therm_applied"] * E),
+        "  kinetic     asked %.4g  applied %.4g erg" % (tot["kin_asked"] * E, tot["kin_applied"] * E),
+    ]
+    if tot["therm_asked"] > 0 and tot["therm_applied"] < 0.99 * tot["therm_asked"]:
+        lines.append("  WARNING: %.1f%% of the thermal energy was lost to the 5e9 K ceiling."
+                     % (100 * (1 - tot["therm_applied"] / tot["therm_asked"])))
+    if tot["kin_asked"] > 0 and tot["kin_applied"] < 0.99 * tot["kin_asked"]:
+        lines.append("  WARNING: %.1f%% of the kinetic energy was clipped by BHBipolarInjMaxVel."
+                     % (100 * (1 - tot["kin_applied"] / tot["kin_asked"])))
+    dp = ledger["dp_ratio"][np.isfinite(ledger["dp_ratio"])]
+    if dp.size and np.any(dp > 0):
+        lines.append("  |sum dp|/sum|dp| of the kicks: median %.3g, max %.3g (0 = momentum-balanced)"
+                     % (np.median(dp[dp > 0]), dp.max()))
+    return "\n".join(lines)
 
 
 def write_report(path, sections):
@@ -1037,16 +1076,19 @@ FIGURE_REQUIREMENTS = (
     ("03", "star_formation", "sfr.txt and the snapshot history"),
     ("04", "energy", "energy.txt"),
     ("05", "scaling_*", "a history (snapshot or catalogue)"),
-    ("06", "injection_counters", "BH_BIPOLAR_INJECTION counters on stdout"),
-    ("07", "axis_stability", "blackhole_bipolar log"),
+    ("06", "injection_counters", "the BH_BIPOLAR_INJECTION counters on stdout -- pass --stdout with the run's stdout file(s)"),
+    ("07", "axis_stability", "the blackhole_bipolar log (BH_BIPOLAR_FEEDBACK)"),
     ("08", "accretion_internals", "blackhole_details"),
-    ("09", "conservation", "blackholes.txt and energy.txt"),
+    ("09", "conservation", "blackholes.txt"),
     ("10", "phase_diagram", "a snapshot"),
     ("11", "radial_profiles", "a snapshot"),
     ("12", "projections", "a snapshot"),
     ("13", "collimation", "a snapshot"),
     ("14", "stellar_ages", "a snapshot with star formation times"),
     ("15", "catalog_evolution", "group catalogues"),
+    ("16", "bh_population", "a snapshot with black holes"),
+    ("17", "bh_tracks", "blackhole_details"),
+    ("18", "bh_local_mesh", "a snapshot with gas and black holes"),
 )
 
 NOT_APPLICABLE = "n/a"
@@ -1076,10 +1118,13 @@ def figure_applicability(summary, logs, produced, has_snapshots=True, has_histor
     collimated = bool(summary and summary.get("collimated"))
     bh_dep = (summary or {}).get("bh_deposition", "kernel")
 
-    inj = (logs or {}).get("injection") or {}
-    bip = (logs or {}).get("bipolar") or {}
-    n_inj = int(np.size(inj.get("time", []))) if inj else 0
-    n_bip = int(np.size(bip.get("time", []))) if bip else 0
+    # Which of the two collimation logs this build can write at all -- the same
+    # rules as the C++ (see _mockrun.logs_written, which the self-test checks
+    # this against).  When a log is possible but absent, the figure is MISSING.
+    cfg = (summary or {}).get("config") or {}
+    channels = [c for c in (summary or {}).get("bipolar_channels", []) if c in ("thermal", "kinetic")]
+    counters_possible = bool(channels) and bh_dep == "kernel"
+    bipolar_log_possible = "BH_BIPOLAR_FEEDBACK" in cfg
 
     rows = []
     for fid, stem, needs in FIGURE_REQUIREMENTS:
@@ -1088,27 +1133,26 @@ def figure_applicability(summary, logs, produced, has_snapshots=True, has_histor
 
         if fid in skipped and not made:
             na = "skipped on request"
-        elif fid in ("06", "07") and not collimated:
-            na = ("no collimated channel in this build: BH feedback is isotropic, "
-                  "so there is no jet axis and no cone counters")
-        elif fid == "06" and collimated and n_inj == 0:
-            na = ("the bipolar channel is on but stdout carries no injection counters -- "
-                  "pass --stdout, or the run wrote them somewhere this did not look")
-        elif fid == "07" and collimated and n_bip == 0:
-            if "BH_BIPOLAR_FEEDBACK" not in ((summary or {}).get("config") or ()):
-                na = ("blackhole_bipolar is written only by the legacy BH_BIPOLAR_FEEDBACK "
-                      "path (blackhole_mdot.cc:486-493, gated on BH_BipolarJ); this run uses "
-                      "BH_BIPOLAR_INJECTION*, which computes its own axis (BH_BipolarInjJ) and "
-                      "never writes it to that log, by design (see the DESIGN NOTE in "
-                      "blackhole_bipolar_injection.cc) -- this is a structural n/a for any "
-                      "BH_BIPOLAR_INJECTION* build, independent of the deposition method")
+        elif fid == "06" and not counters_possible:
+            if not channels:
+                na = ("no BH_BIPOLAR_INJECTION_THERMAL/KINETIC channel in this build; only the cone pass of "
+                      "those channels prints the per-step counters")
             else:
-                na = ("the bipolar channel is on but blackhole_bipolar is empty; with "
-                      "LOCAL_INJECTION_BLACK_HOLES the cone pass is disabled and may not log")
+                na = ("with LOCAL_INJECTION_BLACK_HOLES the cone pass stops after building the axis "
+                      "(blackhole_bipolar_injection.cc:551) and prints no counters, by design; the deposit is "
+                      "recorded by the 'LOCAL_INJECTION BH LEDGER' line instead (needs LOCAL_INJECTION_BH_LEDGER)")
+        elif fid == "07" and not bipolar_log_possible:
+            na = ("blackhole_bipolar is written only by the legacy BH_BIPOLAR_FEEDBACK (blackhole_mdot.cc:438); "
+                  "BH_BIPOLAR_INJECTION* never writes it, and the jet axis for figs 12-13 is recomputed from "
+                  "the snapshot instead")
         elif fid in ("01", "03") and not has_history:
             na = "needs the particle snapshot history, which was not built"
         elif fid in ("10", "11", "12", "13", "14") and not has_snapshots:
             na = "needs a readable snapshot"
+        elif fid in ("16", "18") and not has_snapshots:
+            na = "needs a readable snapshot"
+        elif fid == "18" and _mesh_missing():
+            na = "the 3D page needs %s (pip install %s)" % (" and ".join(_mesh_missing()), " ".join(_mesh_missing()))
         elif fid == "15" and not has_catalog:
             na = "needs a Subfind group catalogue"
 
@@ -1124,12 +1168,21 @@ def figure_applicability(summary, logs, produced, has_snapshots=True, has_histor
                 else:
                     note = ("expect a sharp transition near BHBipolarInj*Theta: the kernel/cone "
                             "deposition has a hard edge at the opening angle")
+            if fid == "18" and bh_dep != "voronoi-local":
+                note = ("LOCAL_INJECTION_BLACK_HOLES is off: the face shares are what local injection would "
+                        "give, not where this run deposits")
             rows.append((fid, stem, PRODUCED, note))
         elif na:
             rows.append((fid, stem, SKIPPED if na == "skipped on request" else NOT_APPLICABLE, na))
         else:
             rows.append((fid, stem, MISSING, "needs %s -- this one is a real gap" % needs))
     return rows
+
+
+def _mesh_missing():
+    from .local_mesh import missing_dependencies
+
+    return missing_dependencies()
 
 
 def format_applicability(rows, summary=None):

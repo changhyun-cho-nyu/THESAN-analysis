@@ -75,6 +75,7 @@ def build_history(
             rec = galaxy.measure(
                 snap, centre, radii_kpc=radii_kpc, group_index=group_index,
                 cat=cinfo.get("_catalog"), subhalo_index=cinfo.get("subhalo_index"),
+                bh_id=cinfo.get("bh_id"),
             )
             rec["centre_method"] = cinfo.get("method", "?")
             for k in ("bh_id", "M200c_msun", "R200c_kpc", "subhalo_index"):

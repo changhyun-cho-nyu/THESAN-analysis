@@ -22,7 +22,7 @@ import traceback
 import numpy as np
 
 from . import arepo_io as io
-from . import bh_logs, catalog, diagnostics, evolution, galaxy, history, maps, scaling, tree as tree_mod
+from . import bh_logs, bh_population, catalog, diagnostics, evolution, galaxy, history, local_mesh, maps, scaling, tree as tree_mod
 from .plotstyle import apply_style
 
 
@@ -58,6 +58,8 @@ def main(argv=None):
     ap.add_argument("--stdout", default=None, help="stdout log(s) for the injection counters; comma-separated for a restart chain")
     ap.add_argument("--extent", type=float, default=20.0, help="half-size of the projection maps, kpc")
     ap.add_argument("--no-maps", action="store_true", help="skip the (slow) projection figures")
+    ap.add_argument("--mesh-bhs", type=int, default=10,
+                    help="3D page of the local Voronoi cell of this many most massive BHs (0 = skip; needs scipy and plotly)")
     ap.add_argument("--catalog-only", action="store_true",
                     help="build the history from the group catalogues alone -- seconds instead of hours, "
                          "at the cost of the particle-based apertures, gas phases and kinematics")
@@ -160,7 +162,8 @@ def main(argv=None):
         made += _try("overview", evolution.plot_overview, hist, units, os.path.join(figdir, "01_overview.png"), title=title, logs=logs)
         made += _try("sfh", evolution.plot_sfh, logs, hist, units, os.path.join(figdir, "03_star_formation.png"), title=title)
     made += _try("bh growth", evolution.plot_bh_growth, logs, units, os.path.join(figdir, "02_bh_growth.png"), title=title)
-    made += _try("energy", evolution.plot_energy_budget, logs, units, os.path.join(figdir, "04_energy.png"), hist=hist, params=params, title=title)
+    made += _try("energy", evolution.plot_energy_budget, logs, units, os.path.join(figdir, "04_energy.png"), hist=hist, params=params,
+                 title=title, summary=summary)
 
     # -- 4. scaling relations ----------------------------------------------
     print("\n--- scaling relations ---")
@@ -202,7 +205,23 @@ def main(argv=None):
         title=title,
     )
     reports.append(diagnostics.check_mode_switch(logs["details"], inj, units, params, summary=summary))
-    made += _try("conservation", diagnostics.plot_conservation, logs, units, os.path.join(figdir, "09_conservation.png"), params=params, hist=hist, title=title)
+    made += _try("conservation", diagnostics.plot_conservation, logs, units, os.path.join(figdir, "09_conservation.png"), params=params,
+                 hist=hist, title=title, summary=summary)
+    reports.append(diagnostics.ledger_report(logs.get("ledger"), units))
+
+    # -- 5b. every black hole, not just the target galaxy's ------------------
+    print("\n--- all black holes ---")
+    if last_snap is not None:
+        bht = _try_value(bh_population.bh_table, last_snap)
+        if bht is not None:
+            _try_value(bh_population.write_bh_table, os.path.join(figdir, "bh_table.txt"), bht, last_snap)
+            made += _try("bh population", bh_population.plot_population, bht, os.path.join(figdir, "16_bh_population.png"),
+                         snap=last_snap, title=title)
+    made += _try("bh tracks", bh_population.plot_tracks, logs["details"], logs["mergers"], units,
+                 os.path.join(figdir, "17_bh_tracks.png"), params=params, title=title)
+    if last_snap is not None and args.mesh_bhs > 0:
+        made += _try("bh local mesh", local_mesh.local_mesh_page, last_snap, os.path.join(figdir, "18_bh_local_mesh.html"),
+                     max_bhs=args.mesh_bhs)
 
     # -- 6. maps and the collimation test -----------------------------------
     if last_snap is not None and not args.no_maps:
@@ -253,6 +272,8 @@ def main(argv=None):
         skipped |= {"10", "11", "12", "13", "14"}
     if args.catalog_only:
         skipped |= {"01", "03"}
+    if args.mesh_bhs <= 0:
+        skipped |= {"18"}
     rows = diagnostics.figure_applicability(
         summary, logs, made,
         has_snapshots=bool(snaps), has_history=hist is not None, has_catalog=chist is not None,

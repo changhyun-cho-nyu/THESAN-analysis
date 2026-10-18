@@ -328,9 +328,9 @@ def read_group_catalog(output_dir, num, fields=None, table="Group"):
     files = group_files(output_dir, num)
     header = read_header(files[0])
 
-    # AREPO2 writes Nsubhalos_* (fof_io.cc:891); the Nsubgroups_* spelling is
+    # AREPO2 writes Nsubhalos_* (fof_io.cc:948); the Nsubgroups_* spelling is
     # the legacy Illustris/TNG one, which the code itself still accepts on read
-    # (fof_io.cc:923).  Try the current name first, not the legacy one.
+    # (fof_io.cc:980).  Try the current name first, not the legacy one.
     if table == "Group":
         tot_names, this_names = ("Ngroups_Total",), ("Ngroups_ThisFile",)
     else:

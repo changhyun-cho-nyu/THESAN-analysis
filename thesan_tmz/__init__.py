@@ -27,7 +27,10 @@ Module map
 ``arepo_io``    HDF5 snapshot and group-catalogue readers
 ``catalog``     Subfind layer -- every galaxy-scale number comes from here
 ``tree``        the THESAN-Zoom merger tree, output/tree.hdf5
-``bh_logs``     parsers for blackholes.txt, blackhole_details, bipolar logs, stdout
+``bh_logs``     parsers for blackholes.txt, blackhole_details, bipolar logs, stdout;
+                the AGN energy book
+``bh_population`` every black hole: per-BH table, population and track figures
+``local_mesh``  each BH's cell in its local Voronoi mesh, rebuilt from the gas; 3D page
 ``galaxy``      centring, apertures, gas phases, kinematics, radial profiles
 ``history``     walk the snapshots once, cache the result (or the catalogues only)
 ``obs``         published scaling relations to compare against
@@ -47,6 +50,8 @@ __all__ = [
     "catalog",
     "tree",
     "bh_logs",
+    "bh_population",
+    "local_mesh",
     "galaxy",
     "history",
     "obs",

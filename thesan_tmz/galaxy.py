@@ -44,6 +44,21 @@ NH_DENSE = 0.1  # cm^-3
 # ---------------------------------------------------------------------------
 
 
+def target_bh_radius_kpc(props):
+    """How far from its galaxy's centre a BH still counts as that galaxy's BH.
+
+    Five stellar half-mass radii -- generous, because a BH that has been kicked
+    or is still sinking is still that galaxy's BH -- or, before the galaxy has a
+    measured stellar size, max(5 kpc, 0.1 R200c).  ``props`` is a
+    :meth:`Catalog.properties` dict (empty when there is no catalogue).
+    """
+    props = props or {}
+    rlim = 5.0 * props.get("rhalf_star_kpc", 0.0)
+    if not (rlim > 0):
+        rlim = max(5.0, props.get("r200c_kpc", 0.0) * 0.1)
+    return float(rlim)
+
+
 def centre_on_bh(snap, bh_id=None, cat=None, in_target_galaxy=True):
     """Centre on a black hole: the most massive one, or a specified ID.
 
@@ -76,10 +91,7 @@ def centre_on_bh(snap, bh_id=None, cat=None, in_target_galaxy=True):
                 pos = cat.s("pos")
                 if j is not None and pos is not None:
                     L = snap.units.length_to_kpc(snap.a)
-                    props = cat.properties(j)
-                    rlim = 5.0 * props.get("rhalf_star_kpc", 0.0)
-                    if not (rlim > 0):
-                        rlim = max(5.0, props.get("r200c_kpc", 0.0) * 0.1)
+                    rlim = target_bh_radius_kpc(cat.properties(j))
                     r = io.radius_from(d["Coordinates"], np.asarray(pos)[j], snap.boxsize) * L
                     near = r <= rlim
                     if near.any():
@@ -337,7 +349,7 @@ def gas_phase_masks(T, nH=None, sfr=None):
 
 
 def measure(snap, centre, radii_kpc=(1.0, 2.0, 5.0, 10.0, 30.0), vel_centre=None, group_index=0,
-            cat=None, subhalo_index=None, use_inrad=True):
+            cat=None, subhalo_index=None, use_inrad=True, bh_id=None):
     """Measure a standard set of galaxy properties in spherical apertures.
 
     Parameters
@@ -355,7 +367,8 @@ def measure(snap, centre, radii_kpc=(1.0, 2.0, 5.0, 10.0, 30.0), vel_centre=None
     -------
     dict
         Scalars keyed ``<quantity>_r<radius>``, e.g. ``mstar_r5``, plus
-        aperture-independent entries (``bh_mass_msun``, ``mhalo_msun``, ...).
+        aperture-independent entries (``bh_mass_msun`` -- the galaxy's own BH,
+        see the black-hole block -- ``mhalo_msun``, ...).
         Everything is in physical units: Msun, Msun/yr, kpc, km/s, K.
     """
     u = snap.units
@@ -372,38 +385,6 @@ def measure(snap, centre, radii_kpc=(1.0, 2.0, 5.0, 10.0, 30.0), vel_centre=None
     bh = snap.part(io.PT_BH, ["Coordinates", "Masses", "BH_Mass", "BH_Mdot", "BH_Hsml", "ParticleIDs", "BH_Density", "BH_U",
                                "BH_CumEgyInjection_QM", "BH_CumEgyInjection_RM"])
 
-    # -- black hole ---------------------------------------------------------
-    if bh.get("count", 0) and "Coordinates" in bh:
-        rbh = io.radius_from(bh["Coordinates"], centre, box) * L
-        near = rbh < max(radii_kpc)
-        mbh = bh.get("BH_Mass", bh.get("Masses"))
-        out["n_bh_in_aperture"] = int(near.sum())
-        out["bh_mass_msun"] = float(np.sum(mbh[near]) * M) if near.any() else 0.0
-        out["bh_mass_max_msun"] = float(np.max(mbh) * M)
-        if "BH_Mdot" in bh:
-            out["bh_mdot_msun_per_yr"] = float(np.sum(bh["BH_Mdot"][near]) * u.mdot_to_msun_per_yr) if near.any() else 0.0
-            out["bh_mdot_max_msun_per_yr"] = float(np.max(bh["BH_Mdot"]) * u.mdot_to_msun_per_yr)
-        if "BH_Hsml" in bh and near.any():
-            out["bh_hsml_kpc"] = float(np.mean(bh["BH_Hsml"][near]) * L)
-        if out.get("bh_mass_msun", 0) > 0 and "bh_mdot_msun_per_yr" in out:
-            out["eddington_ratio"] = float(u.eddington_ratio(out["bh_mdot_msun_per_yr"], out["bh_mass_msun"]))
-        # BH_CumEgyInjection_QM/RM (snap_io.cc: BCEQ/BCER) are the code's own
-        # running totals of thermal/kinetic feedback energy actually coupled to
-        # the gas by BH_THERMALFEEDBACK -- unlike energy.txt's e_injected
-        # (All.EgyInjection, a mesh refinement/derefinement bookkeeping term
-        # with no connection to AGN feedback), this is the real quantity.  Not
-        # incremented by BH_BIPOLAR_INJECTION*, which keeps its own budget only
-        # in the per-step stdout counters (see evolution.plot_energy_budget).
-        cum_th = bh.get("BH_CumEgyInjection_QM")
-        cum_kin = bh.get("BH_CumEgyInjection_RM")
-        if (cum_th is not None or cum_kin is not None) and near.any():
-            z = np.zeros(mbh.shape, dtype=np.float64)
-            out["bh_cum_egy_injected_code"] = float(np.sum(((cum_th if cum_th is not None else z) +
-                                                              (cum_kin if cum_kin is not None else z))[near]))
-    else:
-        out["n_bh_in_aperture"] = 0
-        out["bh_mass_msun"] = 0.0
-
     # -- galaxy and halo, from the Subfind catalogue ------------------------
     #
     # These are the *galaxy-scale* numbers and they come from Subfind, not from
@@ -414,6 +395,7 @@ def measure(snap, centre, radii_kpc=(1.0, 2.0, 5.0, 10.0, 30.0), vel_centre=None
     # host FoF group's M200c, which is the whole zoom system and is only the
     # right SMHM x-axis when this galaxy is that group's central (recorded as
     # ``sub_is_central``).
+    cat_props = {}
     try:
         if cat is None:
             cat = cat_mod.load(snap)
@@ -427,6 +409,7 @@ def measure(snap, centre, radii_kpc=(1.0, 2.0, 5.0, 10.0, 30.0), vel_centre=None
                 else:
                     subhalo_index = cat.target_index()
             props = cat.properties(subhalo_index, use_inrad=use_inrad)
+            cat_props = props
             for k, v in props.items():
                 if k in ("a", "z", "aperture"):
                     continue
@@ -440,6 +423,65 @@ def measure(snap, centre, radii_kpc=(1.0, 2.0, 5.0, 10.0, 30.0), vel_centre=None
             out["n_groups"] = cat.n_grp
     except (FileNotFoundError, OSError, KeyError, IndexError) as exc:
         out["sub_error"] = str(exc)
+
+    # -- black hole ---------------------------------------------------------
+    #
+    # "The galaxy's BH" is ONE object: the BH the figures were centred on
+    # (``bh_id``), or else the most massive BH within target_bh_radius_kpc() of
+    # the centre -- the same rule centre_on_bh() uses.  Summing every BH within
+    # the largest aperture, as this used to, blends in a satellite's BH during a
+    # merger, exactly when the BH numbers matter.  The sum is kept, under its own
+    # name, as bh_mass_sum_msun.
+    rbh = np.zeros(0)
+    if bh.get("count", 0) and "Coordinates" in bh:
+        rbh = io.radius_from(bh["Coordinates"], centre, box) * L
+        mbh = np.asarray(bh.get("BH_Mass", bh.get("Masses")), dtype=np.float64)
+        near = rbh < max(radii_kpc)
+        out["n_bh_in_aperture"] = int(near.sum())
+        out["bh_mass_sum_msun"] = float(np.sum(mbh[near]) * M) if near.any() else 0.0
+        out["bh_mass_max_msun"] = float(np.max(mbh) * M)
+        if "BH_Mdot" in bh:
+            out["bh_mdot_max_msun_per_yr"] = float(np.max(bh["BH_Mdot"]) * u.mdot_to_msun_per_yr)
+
+        k = None
+        if bh_id is not None and "ParticleIDs" in bh:
+            hit = np.where(bh["ParticleIDs"] == bh_id)[0]
+            k = int(hit[0]) if hit.size else None
+        if k is None:
+            inside = rbh <= target_bh_radius_kpc(cat_props)
+            if inside.any():
+                k = int(np.argmax(np.where(inside, mbh, -np.inf)))
+        if k is not None:
+            out["bh_mass_msun"] = float(mbh[k] * M)
+            out["bh_offset_kpc"] = float(rbh[k])
+            if "ParticleIDs" in bh:
+                out["bh_id"] = int(bh["ParticleIDs"][k])
+            if "BH_Mdot" in bh:
+                out["bh_mdot_msun_per_yr"] = float(bh["BH_Mdot"][k] * u.mdot_to_msun_per_yr)
+                out["eddington_ratio"] = float(u.eddington_ratio(out["bh_mdot_msun_per_yr"], out["bh_mass_msun"]))
+            if "BH_Hsml" in bh:
+                out["bh_hsml_kpc"] = float(bh["BH_Hsml"][k] * L)
+        else:
+            out["bh_mass_msun"] = 0.0
+
+        # BH_CumEgyInjection_QM/RM (snap_io.cc: BCEQ/BCER) are the code's own
+        # running totals of feedback energy on each BH particle -- unlike
+        # energy.txt's e_injected (All.EgyInjection, a mesh refinement
+        # bookkeeping term with no connection to AGN feedback).  Summed over the
+        # BHs in the aperture.  QM only counts the isotropic BH_THERMALFEEDBACK
+        # channel; BH_BIPOLAR_INJECTION* energy never reaches a snapshot field.
+        cum_th = bh.get("BH_CumEgyInjection_QM")
+        cum_kin = bh.get("BH_CumEgyInjection_RM")
+        if cum_th is not None or cum_kin is not None:
+            z = np.zeros(mbh.shape, dtype=np.float64)
+            cum = (cum_th if cum_th is not None else z) + (cum_kin if cum_kin is not None else z)
+            # Over ALL BHs: the box total, comparable with blackholes.txt (bh_logs.agn_energy_sources).
+            out["bh_cum_egy_all_code"] = float(np.sum(cum))
+            if near.any():
+                out["bh_cum_egy_injected_code"] = float(np.sum(cum[near]))
+    else:
+        out["n_bh_in_aperture"] = 0
+        out["bh_mass_msun"] = 0.0
 
     # -- velocity frame -----------------------------------------------------
     if vel_centre is None:
@@ -489,7 +531,9 @@ def measure(snap, centre, radii_kpc=(1.0, 2.0, 5.0, 10.0, 30.0), vel_centre=None
 
         # Total enclosed mass and circular velocity: the cleanest dynamical
         # summary, and the thing to compare against a rotation curve.
-        mtot = out["mgas_%s" % tag] + out["mstar_%s" % tag] + out["mdm_%s" % tag] + out.get("bh_mass_msun", 0.0)
+        # Only the BHs inside R count, by their dynamical (particle) mass.
+        mbh_R = float(np.sum(bh["Masses"][rbh <= R]) * M) if rbh.size and "Masses" in bh else 0.0
+        mtot = out["mgas_%s" % tag] + out["mstar_%s" % tag] + out["mdm_%s" % tag] + mbh_R
         out["mtot_%s" % tag] = mtot
         out["vcirc_%s" % tag] = _vcirc_kms(mtot, R)
 
@@ -694,7 +738,8 @@ def radial_profile(snap, centre, parttype, quantity="mass", bins=None, phase=Non
         rel = io.periodic_delta(d["Coordinates"], centre, box) * L
         rr = np.linalg.norm(rel, axis=1)
         vc = _galaxy_rest_frame(snap, centre, max(centres) if centres.size else 10.0)
-        dv = (d["Velocities"] - vc) * u.peculiar_velocity_to_kms(a)
+        # peculiar velocity plus the Hubble flow H(a) r (rel is in physical kpc)
+        dv = (d["Velocities"] - vc) * u.peculiar_velocity_to_kms(a) + u.hubble_kms_per_kpc(a) * rel
         with np.errstate(invalid="ignore", divide="ignore"):
             vr = np.sum(rel * dv, axis=1) / np.where(rr > 0, rr, np.nan)
         res["value"] = wmean(np.nan_to_num(vr))

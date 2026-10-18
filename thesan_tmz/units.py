@@ -24,7 +24,7 @@ Convention used by AREPO for a cosmological run (ComovingIntegrationOn 1):
     BH_Mdot           code mass / code time / h?      see note below
     Potential         (a) km^2/s^2                    phi / a
 
-Note on BH_Mdot: AREPO's own blackholes.txt conversion (blackhole.cc:215) is
+Note on BH_Mdot: AREPO's own blackholes.txt conversion (blackhole.cc:217) is
 
     mdot_msun_per_yr = mdot * (UnitMass_in_g / SOLAR_MASS)
                             / (UnitTime_in_s / SEC_PER_YEAR)
@@ -131,7 +131,7 @@ class Units:
     def from_snapshot_file(cls, path):
         """Read units + cosmology straight out of an HDF5 snapshot.
 
-        Uses ``/Parameters`` when present (AREPO2 writes it, io.cc:969) and
+        Uses ``/Parameters`` when present (AREPO2 writes it, io.cc:976) and
         falls back to ``/Header`` for older files, which only carry the
         cosmology and not the unit scales.
         """
@@ -167,7 +167,7 @@ class Units:
         """Read units + cosmology from a plain-text parameter file.
 
         Works both on the file you handed to AREPO and on the
-        ``<param>-usedvalues`` file it writes back out (parameters.cc:68).
+        ``<param>-usedvalues`` file it writes back out (parameters.cc:71).
         """
         vals = {}
         with open(path) as fh:
@@ -222,7 +222,7 @@ class Units:
     def mdot_to_msun_per_yr(self):
         """Code accretion rate -> Msun/yr.
 
-        Deliberately reproduces blackhole.cc:215 exactly, including the
+        Deliberately reproduces blackhole.cc:217 exactly, including the
         absence of an explicit 1/h, so that values derived here match
         column 5 of ``blackholes.txt`` bit for bit.
         """
@@ -364,6 +364,13 @@ class Units:
         a = np.asarray(a, dtype=np.float64)
         Ok = 1.0 - self.Omega0 - self.OmegaLambda
         return self.h * 100.0 * np.sqrt(self.Omega0 / a ** 3 + Ok / a ** 2 + self.OmegaLambda)
+
+    def hubble_kms_per_kpc(self, a=1.0):
+        """H(a) in km/s per physical kpc, for the Hubble flow H r of a velocity
+        relative to a centre.  Zero for a non-comoving run."""
+        if not self.comoving:
+            return 0.0
+        return float(self.hubble_z(a)) / 1.0e3
 
     def rho_crit_cgs(self, a=1.0):
         Hz = self.hubble_z(a) * 1.0e5 / MPC_IN_CM  # s^-1

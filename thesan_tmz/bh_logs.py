@@ -2,21 +2,22 @@
 Parsers for the ASCII logs this branch writes.
 
 Every format below was read off the ``fprintf`` that produces it, not guessed.
+Line numbers refer to arepo ``Arepo2-TMZ-newbh`` at ``0b41480f0b``.
 The source line is quoted next to each parser so you can re-check it when the
 code changes.
 
-    blackholes.txt                    src/blackhole/blackhole.cc:225
+    blackholes.txt                    src/blackhole/blackhole.cc:227
     blackhole_details/blackhole_details_<task>.txt
-                                      src/blackhole/blackhole_mdot.cc:483   (6 cols, default)
-                                      src/blackhole/blackhole_mdot.cc:573   (8 cols, alpha disc)
-                                      src/blackhole/blackhole_mdot.cc:688   (7 cols, torque)
+                                      src/blackhole/blackhole_mdot.cc:431   (6 cols, default)
+                                      src/blackhole/blackhole_mdot.cc:521   (8 cols, alpha disc)
+                                      src/blackhole/blackhole_mdot.cc:637   (7 cols, torque)
     blackhole_bipolar/blackhole_bipolar_<task>.txt
-                                      src/blackhole/blackhole_mdot.cc:490
+                                      src/blackhole/blackhole_mdot.cc:438
     blackhole_mergers/blackhole_mergers_<task>.txt
-                                      src/blackhole/blackhole_mergers.cc:992
-    sfr.txt                           src/cooling_sfr/starformation.cc:702
+                                      src/blackhole/blackhole_mergers.cc:970/1101
+    sfr.txt                           src/cooling_sfr/starformation.cc:700
     energy.txt                        src/logs/global.cc:92
-    stdout                            src/blackhole/blackhole_bipolar_injection.cc:736/741
+    stdout                            src/blackhole/blackhole_bipolar_injection.cc:700/705
 
 A note on the per-task files: AREPO writes one file *per MPI rank*, and a given
 black hole migrates between ranks as the domain decomposition changes.  So you
@@ -53,19 +54,19 @@ BLACKHOLES_COLS = [
     "mdot_eddington",  # sum of Mdot/Mdot_Edd
 ]
 
-#: blackhole_details, default (Bondi / freefall / ...) -- mdot.cc:483
+#: blackhole_details, default (Bondi / freefall / ...) -- mdot.cc:431
 DETAILS_COLS_DEFAULT = ["id", "time", "bh_mass", "mdot", "rho", "csnd"]
 
-#: blackhole_details with BH_ALPHA_DISK_ACCRETION -- mdot.cc:573.
+#: blackhole_details with BH_ALPHA_DISK_ACCRETION -- mdot.cc:521.
 #: Same six columns as the default, plus Omega and the Toomre Q.
 DETAILS_COLS_ALPHA = DETAILS_COLS_DEFAULT + ["omega", "toomre_q"]
 
-#: blackhole_details with BH_TORQUE_LIMITED_ACCRETION -- mdot.cc:688.
+#: blackhole_details with BH_TORQUE_LIMITED_ACCRETION -- mdot.cc:637.
 #: NOTE: this one does *not* write the sound speed -- f_disk and f_gas take
 #: the place of the csnd column, so it is 7 columns, not 8.
 DETAILS_COLS_TORQUE = ["id", "time", "bh_mass", "mdot", "rho", "f_disk", "f_gas"]
 
-#: blackhole_bipolar -- mdot.cc:490
+#: blackhole_bipolar -- mdot.cc:438
 BIPOLAR_COLS = [
     "id",
     "time",
@@ -78,10 +79,10 @@ BIPOLAR_COLS = [
     "cold_fraction",  # BH_BipolarColdFraction
 ]
 
-#: blackhole_mergers -- mergers.cc:992
+#: blackhole_mergers -- mergers.cc:970
 MERGER_COLS = ["task", "time", "id_survivor", "mass_survivor", "id_swallowed", "mass_swallowed"]
 
-#: sfr.txt -- starformation.cc:702
+#: sfr.txt -- starformation.cc:700
 SFR_COLS = [
     "time",
     "total_sm",  # instantaneous stellar mass formed this step (code units)
@@ -341,42 +342,141 @@ def read_energy_txt(output_dir):
     return _sort_by_time(_as_dict(arr, ENERGY_COLS))
 
 
-def agn_cumulative_energy(hist, inj, units):
-    """The correct source for cumulative AGN feedback energy, in erg.
+def agn_energy_sources(hist, logs, units):
+    """Cumulative AGN feedback energy of the whole box, from the best source the
+    build provides.  Everything is a box total, like ``blackholes.txt``.
 
-    ``energy.txt``'s ``e_injected`` column is ``All.EgyInjection`` (see
-    ``global.cc:92`` -> ``egyinj_tot``).  That variable is a mesh
-    refinement/derefinement energy-conservation tracker
-    (``src/hydro/update_primitive_variables.cc``) and a special-problem
-    relaxation term (``relaxobject.cc``) -- no black-hole feedback routine
-    ever touches it, so it must not be plotted or compared against as if it
-    were AGN energy (an earlier version of this package did exactly that in
-    ``plot_energy_budget`` / ``plot_conservation``, which is why those panels
-    showed noise near zero instead of a rising budget).
+    Where the energy is recorded depends on the build (checked against the C++):
 
-    The real running total lives in one of two places, depending on the
-    build:
+      * LOCAL_INJECTION_BLACK_HOLES + LOCAL_INJECTION_BH_LEDGER -- the per-step
+        ledger (local_injection.cc:926) has every channel, both what left the
+        reservoirs ("released") and what reached the gas ("deposited", after the
+        5e9 K ceiling and the kick velocity cap).  The complete record.
+      * BH_BIPOLAR_INJECTION_* without local injection -- the stdout counters
+        (cone pass) give the collimated channels; the isotropic channel, if
+        BH_THERMALFEEDBACK is on, is in the snapshots' BH_CumEgyInjection_QM.
+      * otherwise -- BH_CumEgyInjection_QM (+ _RM) summed over **all** BHs in
+        each snapshot (``hist['bh_cum_egy_all_code']``).
 
-      * ``BH_BIPOLAR_INJECTION*`` -- only ever reported on stdout, per step
-        (``blackhole_bipolar_injection.cc:736/741``); nothing persists it to
-        a particle field, so the stdout counters are the only source.
-      * ``BH_THERMALFEEDBACK`` (no bipolar channel) -- ``BH_CumEgyInjection_QM``
-        / ``_RM`` (``snap_io.cc``, short names ``BCEQ``/``BCER``) accumulate it
-        on the BH particle itself and are read out per snapshot into
-        ``hist['bh_cum_egy_injected_code']`` by :mod:`galaxy`.
+    BH_CumEgyInjection_QM is incremented only by the isotropic channel
+    (blackhole_mdot.cc:250, under BH_THERMALFEEDBACK); the bipolar channels never
+    reach a snapshot field.  energy.txt's ``e_injected`` is All.EgyInjection, a
+    mesh-refinement bookkeeping term unrelated to AGN feedback.
 
-    Returns ``(t_gyr, e_erg, source)``, or ``(None, None, None)`` if neither
-    is available.
+    Returns a dict:
+      ``released``   ``(t_gyr, e_erg, label)`` or None
+      ``deposited``  ``(t_gyr, e_erg, label)`` or None (ledger only)
+      ``components`` list of ``(label, t_gyr, e_erg)``, per channel where known
+      ``source``     short name of the source used
     """
-    if inj is not None and np.size(inj.get("time", [])) and np.isfinite(inj.get("thermal", np.array([np.nan]))).any():
+    out = {"released": None, "deposited": None, "components": [], "source": None}
+    E = units.energy_to_erg
+    led = (logs or {}).get("ledger") or {}
+    inj = (logs or {}).get("injection") or {}
+
+    snap_t = snap_e = None
+    if hist is not None and "bh_cum_egy_all_code" in hist and np.isfinite(hist["bh_cum_egy_all_code"]).any():
+        ok = np.isfinite(hist["bh_cum_egy_all_code"])
+        snap_t, snap_e = hist["age_gyr"][ok], hist["bh_cum_egy_all_code"][ok] * E
+
+    if np.size(led.get("time", [])):
+        t = units.age_gyr(led["time"])
+        parts = [(name, np.cumsum(np.nan_to_num(led[k])) * E)
+                 for name, k in (("isotropic", "drained_iso"), ("collimated thermal", "drained_coll"),
+                                 ("kinetic", "drained_kin"))]
+        out["components"] = [("%s (ledger)" % n, t, e) for n, e in parts if e[-1] > 0]
+        out["released"] = (t, sum(e for _, e in parts), "released (LOCAL_INJECTION BH LEDGER)")
+        out["deposited"] = (t, np.cumsum(np.nan_to_num(led["therm_applied"]) + np.nan_to_num(led["kin_applied"])) * E,
+                            "deposited in the gas (ledger)")
+        out["source"] = "ledger"
+        return out
+
+    if np.size(inj.get("time", [])):
         t = units.age_gyr(inj["time"])
-        e = np.cumsum(np.nan_to_num(inj["thermal"]) + np.nan_to_num(inj["kinetic"])) * units.energy_to_erg
-        return t, e, "BH_BIPOLAR_INJECTION stdout counters"
-    if hist is not None and "bh_cum_egy_injected_code" in hist and np.isfinite(hist["bh_cum_egy_injected_code"]).any():
-        t = hist["age_gyr"]
-        e = np.nan_to_num(hist["bh_cum_egy_injected_code"]) * units.energy_to_erg
-        return t, e, "BH_CumEgyInjection_QM/RM (snapshots)"
-    return None, None, None
+        coll = np.cumsum(np.nan_to_num(inj["thermal"]) + np.nan_to_num(inj["kinetic"])) * E
+        out["components"].append(("collimated (stdout counters)", t, coll))
+        total, label = coll, "released (stdout counters"
+        if snap_t is not None and snap_e[-1] > 0:
+            iso = np.interp(t, snap_t, snap_e, left=0.0)
+            out["components"].append(("isotropic (BH_CumEgyInjection_QM, all BHs)", snap_t, snap_e))
+            total, label = coll + iso, label + " + BH_CumEgyInjection_QM"
+        out["released"] = (t, total, label + ")")
+        out["source"] = "counters"
+        return out
+
+    if snap_t is not None:
+        out["released"] = (snap_t, snap_e, "released (BH_CumEgyInjection_QM/RM, all BHs)")
+        out["components"].append(("isotropic (BH_CumEgyInjection_QM, all BHs)", snap_t, snap_e))
+        out["source"] = "snapshots"
+    return out
+
+
+def expected_agn_energy(t_gyr, blackholes, params, config, units):
+    """What the parameters predict for the cumulative released energy.
+
+    Integrates Mdot c^2 from ``blackholes.txt`` (box total) and multiplies by
+    eps_r times each channel's coupling efficiency, as blackhole_mdot.cc fills
+    the reservoirs:
+
+      * isotropic (BH_THERMALFEEDBACK[_ACC]):  eps_f   = BlackHoleFeedbackFactor
+      * collimated thermal / kinetic:          eps_th  = BHBipolarInjThermalEfficiency,
+                                               eps_kin = BHBipolarInjKineticEfficiency
+        With BH_BIPOLAR_INJECTION_MODE_SWITCH each BH-step feeds one of the two,
+        so the prediction is a band between them; without, both are fed.
+
+    No defaults: a missing parameter means no prediction (None), never a guessed
+    one.  With BH_VARIABLE_RADIATIVE_EFFICIENCY eps_r varies per step and the
+    prediction uses BlackHoleRadiativeEfficiency, so it is only indicative.
+
+    Returns ``{'lo': e_erg, 'hi': e_erg, 'label': str, 'note': str}`` on the
+    ``t_gyr`` grid, or None.
+    """
+    from .units import CLIGHT, SEC_PER_YEAR, SOLAR_MASS
+
+    params, cfg = params or {}, set(config or ())
+    if not np.size(blackholes.get("time", [])) or "BlackHoleRadiativeEfficiency" not in params:
+        return None
+    eps_r = float(params["BlackHoleRadiativeEfficiency"])
+
+    lo = hi = 0.0
+    parts = []
+    if {"BH_THERMALFEEDBACK", "BH_THERMALFEEDBACK_ACC"} & cfg:
+        if "BlackHoleFeedbackFactor" not in params:
+            return None
+        lo = hi = float(params["BlackHoleFeedbackFactor"])
+        parts.append("eps_f")
+    eff = []
+    for opt, key in (("BH_BIPOLAR_INJECTION_THERMAL", "BHBipolarInjThermalEfficiency"),
+                     ("BH_BIPOLAR_INJECTION_KINETIC", "BHBipolarInjKineticEfficiency")):
+        if opt in cfg:
+            if key not in params:
+                return None
+            eff.append(float(params[key]))
+    if eff:
+        if "BH_BIPOLAR_INJECTION_MODE_SWITCH" in cfg:
+            lo, hi = lo + min(eff), hi + max(eff)
+            parts.append("eps_th or eps_kin")
+        else:
+            lo, hi = lo + sum(eff), hi + sum(eff)
+            parts.append("eps_th + eps_kin")
+    if not parts:
+        return None
+
+    tb = units.age_gyr(blackholes["time"])
+    rate = blackholes["mdot_msun_per_yr"]
+    acc = np.zeros_like(tb)
+    acc[1:] = np.cumsum(0.5 * (rate[1:] + rate[:-1]) * np.diff(tb) * 1.0e9)       # Msun accreted
+    e_acc = np.interp(t_gyr, tb, acc) * SOLAR_MASS * CLIGHT ** 2                   # erg
+    note = "eps_r = %g%s" % (eps_r, " (variable: indicative)" if "BH_VARIABLE_RADIATIVE_EFFICIENCY" in cfg else "")
+    return {"lo": lo * eps_r * e_acc, "hi": hi * eps_r * e_acc,
+            "label": r"expected: (%s) $\epsilon_r\int\dot M c^2 dt$" % " + ".join(parts), "note": note}
+
+
+def agn_cumulative_energy(hist, inj, units):
+    """Backward-compatible wrapper: ``(t_gyr, e_erg, label)`` of the released energy, or
+    ``(None, None, None)``.  Prefer :func:`agn_energy_sources`, which also reads the ledger."""
+    r = agn_energy_sources(hist, {"injection": inj}, units)["released"]
+    return r if r is not None else (None, None, None)
 
 
 # ---------------------------------------------------------------------------
@@ -384,7 +484,7 @@ def agn_cumulative_energy(hist, inj, units):
 # ---------------------------------------------------------------------------
 
 #: Matches both the MODE_SWITCH and the plain variant of the per-step summary
-#: printed at blackhole_bipolar_injection.cc:736 / :741.
+#: printed at blackhole_bipolar_injection.cc:700 / :741.
 _BIPOLAR_RX = re.compile(
     r"BH_BIPOLAR_INJECTION:\s*injected thermal\s*=\s*(?P<thermal>[-+0-9.eEnaif]+),\s*"
     r"kinetic\s*=\s*(?P<kinetic>[-+0-9.eEnaif]+)\s*\(code units\);\s*"
@@ -401,28 +501,51 @@ _BIPOLAR_RX = re.compile(
 _SYNC_RX = re.compile(r"Sync-Point\s+(\d+),\s*Time:\s*([-+0-9.eE]+)(?:,\s*Redshift:\s*([-+0-9.eE]+))?")
 
 
-def parse_bipolar_stdout(logfiles):
-    """Scrape the per-step BH_BIPOLAR_INJECTION summary out of the run's stdout.
+#: LOCAL_INJECTION_BH_LEDGER, printed once per step by rank 0 after the BH deposit
+#: (local_injection.cc:926), MPI-reduced over all BHs:
+#:   drained iso/coll/kin   energy taken out of the isotropic, collimated-thermal
+#:                          and kinetic reservoirs this step
+#:   thermal asked/applied  thermal energy the faces asked for / that reached the
+#:                          gas after the 5e9 K ceiling
+#:   kinetic asked/applied  kinetic energy asked for / applied after BHBipolarInjMaxVel
+#:   |sum dp|/sum|dp|       net momentum of the kicks over their total (0 = balanced)
+#: All energies in code units.
+LEDGER_COLS = ["drained_iso", "drained_coll", "drained_kin", "therm_asked", "therm_applied",
+               "kin_asked", "kin_applied", "dp_ratio"]
+_NUM = r"([-+0-9.eEnaif]+)"
+_LEDGER_RX = re.compile(
+    r"LOCAL_INJECTION BH LEDGER:\s*drained iso\s+%s\s+coll\s+%s\s+kin\s+%s\s*\|\s*"
+    r"thermal asked\s+%s\s+applied\s+%s\s*\|\s*kinetic asked\s+%s\s+applied\s+%s\s*\|\s*"
+    r"\|sum dp\|/sum\|dp\|\s+%s" % ((_NUM,) * 8)
+)
 
-    This is the only place the injection *actually happening* is recorded --
-    the reservoirs and the counters never reach a snapshot.  Silence here is
-    the dangerous failure mode: a BH that holds energy but never finds a target
-    looks identical, in every other output, to a BH that is simply quiet.
 
-    ``logfiles`` may be one path or a list.  A long run is almost always a
-    restart chain with one stdout file per job, so pass all of them (that is
-    what :func:`find_stdout` returns) -- reading only the largest file gives
-    you whichever segment happened to be longest, which for a run that seeds
-    its black holes late is usually a segment with no injection in it at all.
+def scan_stdout(logfiles):
+    """Read the run's stdout once and return both per-step BH records.
 
-    Returns a dict of arrays with keys ``time``, ``sync``, ``thermal``,
-    ``kinetic``, ``n_thermal``, ``n_kinetic``, ``no_axis``, ``cold_fallback``,
-    ``empty_cone``, ``clipped``, ``seconds``.  ``n_thermal``/``n_kinetic`` are
-    NaN when the run was not built with BH_BIPOLAR_INJECTION_MODE_SWITCH.
+    Returns ``{'injection': ..., 'ledger': ...}``:
+
+      * ``injection`` -- the BH_BIPOLAR_INJECTION counters printed by the cone
+        pass (blackhole_bipolar_injection.cc:700/705): keys ``time``, ``sync``,
+        ``thermal``, ``kinetic``, ``n_thermal``, ``n_kinetic``, ``no_axis``,
+        ``cold_fallback``, ``empty_cone``, ``clipped``, ``seconds``
+        (``n_thermal``/``n_kinetic`` NaN without MODE_SWITCH);
+      * ``ledger`` -- the LOCAL_INJECTION BH LEDGER lines: ``time``, ``sync`` and
+        :data:`LEDGER_COLS`.
+
+    Each row gets the time of the preceding ``Sync-Point``.  ``logfiles`` may be
+    one path or a list -- a long run is a restart chain with one stdout per
+    job, so pass all of them (what :func:`find_stdout` returns).
+
+    Which of the two a run has depends on its build: the counters only without
+    LOCAL_INJECTION_BLACK_HOLES; the ledger only with it and
+    LOCAL_INJECTION_BH_LEDGER.  Silence is the dangerous failure mode -- a BH that
+    holds energy but never deposits it looks, in every other output, like a
+    quiet BH -- so what was and was not found is always printed.
     """
-    keys = ["thermal", "kinetic", "n_thermal", "n_kinetic", "no_axis", "cold_fallback", "empty_cone", "clipped", "seconds"]
-    rec = {k: [] for k in keys}
-    rec["time"], rec["sync"] = [], []
+    inj_keys = ["thermal", "kinetic", "n_thermal", "n_kinetic", "no_axis", "cold_fallback", "empty_cone", "clipped", "seconds"]
+    inj = {k: [] for k in ["time", "sync"] + inj_keys}
+    led = {k: [] for k in ["time", "sync"] + LEDGER_COLS}
 
     if logfiles is None:
         paths = []
@@ -432,15 +555,17 @@ def parse_bipolar_stdout(logfiles):
         paths = list(logfiles)
     paths = [p for p in paths if p and os.path.exists(p)]
 
-    if not paths:
-        print("  [bh_logs] no stdout log found -- injection counters unavailable")
-        return {k: np.zeros(0) for k in list(rec.keys())}
+    def arrays(rec):
+        return {k: np.asarray(v, dtype=np.float64) for k, v in rec.items()}
 
-    # Count the raw marker separately from the parsed rows.  If the string is
+    if not paths:
+        print("  [bh_logs] no stdout log found -- injection counters and energy ledger unavailable")
+        return {"injection": arrays(inj), "ledger": arrays(led)}
+
+    # Count the raw markers separately from the parsed rows.  If a marker is
     # present but nothing parses, the regex is out of date with the code -- a
-    # completely different problem from the module never having printed, and
-    # one you cannot tell apart from an empty result alone.
-    n_marker, n_sync, n_start = 0, 0, 0
+    # completely different problem from the module never having printed.
+    n_marker, n_sync, n_start, n_axis_only, n_led_marker = 0, 0, 0, 0, 0
 
     for path in paths:
         cur_time, cur_sync = np.nan, -1
@@ -452,10 +577,22 @@ def parse_bipolar_stdout(logfiles):
                     cur_sync = int(m_sync.group(1))
                     cur_time = float(m_sync.group(2))
                     continue
+                if "LOCAL_INJECTION BH LEDGER" in line:
+                    n_led_marker += 1
+                    m = _LEDGER_RX.search(line)
+                    if m:
+                        led["time"].append(cur_time)
+                        led["sync"].append(cur_sync)
+                        for k, v in zip(LEDGER_COLS, m.groups()):
+                            led[k].append(float(v))
+                    continue
                 if "BH_BIPOLAR_INJECTION" not in line:
                     continue
                 if "Start collimated feedback injection" in line:
                     n_start += 1
+                    continue
+                if "axis only (deposition handed to LOCAL_INJECTION_BLACK_HOLES)" in line:
+                    n_axis_only += 1
                     continue
                 if "injected thermal" in line:
                     n_marker += 1
@@ -463,26 +600,39 @@ def parse_bipolar_stdout(logfiles):
                 if not m:
                     continue
                 g = m.groupdict()
-                rec["time"].append(cur_time)
-                rec["sync"].append(cur_sync)
-                for k in keys:
+                inj["time"].append(cur_time)
+                inj["sync"].append(cur_sync)
+                for k in inj_keys:
                     v = g.get(k)
-                    rec[k].append(np.nan if v is None else float(v))
+                    inj[k].append(np.nan if v is None else float(v))
 
-    out = {k: np.asarray(v, dtype=np.float64) for k, v in rec.items()}
-    n_parsed = out["time"].size
+    out = {"injection": arrays(inj), "ledger": arrays(led)}
+    n_parsed, n_led = out["injection"]["time"].size, out["ledger"]["time"].size
 
-    print("  [bh_logs] stdout: %d file(s), %d Sync-Point lines, %d injection calls, %d summaries, %d parsed"
-          % (len(paths), n_sync, n_start, n_marker, n_parsed))
+    print("  [bh_logs] stdout: %d file(s), %d Sync-Point lines, %d injection calls, %d counter summaries "
+          "(%d parsed), %d ledger lines (%d parsed)"
+          % (len(paths), n_sync, n_start, n_marker, n_parsed, n_led_marker, n_led))
     if n_marker and not n_parsed:
-        print("  [bh_logs] WARNING: the summary line is present but did not parse -- the")
-        print("            format in blackhole_bipolar_injection.cc has changed; update _BIPOLAR_RX.")
-    elif not n_marker and n_sync:
-        print("  [bh_logs] WARNING: the run printed Sync-Points but no injection summary.")
-        print("            Either BH_BIPOLAR_INJECTION was not compiled in, or no black hole")
-        print("            was ever active on a step covered by these files (check whether the")
-        print("            stdout of the segment where the BHs seeded is among them).")
+        print("  [bh_logs] WARNING: the counter line is present but did not parse -- the format in")
+        print("            blackhole_bipolar_injection.cc has changed; update _BIPOLAR_RX.")
+    if n_led_marker and not n_led:
+        print("  [bh_logs] WARNING: the ledger line is present but did not parse -- the format in")
+        print("            local_injection.cc has changed; update _LEDGER_RX.")
+    if n_axis_only and not n_marker:
+        print("  [bh_logs] LOCAL_INJECTION_BLACK_HOLES build (%d 'axis only' steps): no injection counters exist"
+              % n_axis_only)
+        print("            by design; %s" % ("the deposit is in the %d ledger lines." % n_led if n_led else
+              "and no ledger either -- build with LOCAL_INJECTION_BH_LEDGER to record the deposit."))
+    elif not n_marker and not n_led and n_sync:
+        print("  [bh_logs] note: the run printed Sync-Points but neither injection counters nor a ledger --")
+        print("            expected for isotropic kernel feedback; otherwise check that the stdout of the")
+        print("            segment where the BHs were active is among these files.")
     return out
+
+
+def parse_bipolar_stdout(logfiles):
+    """The injection counters only (see :func:`scan_stdout`)."""
+    return scan_stdout(logfiles)["injection"]
 
 
 def find_stdout(run_dir, all_files=True):

@@ -126,7 +126,8 @@ def plot_projection_grid(snap, centre, outpath, extent_kpc=20.0, npix=400, axis=
     T = u.temperature(gas["InternalEnergy"][near], gas["ElectronAbundance"][near] if "ElectronAbundance" in gas else None)
 
     vc = np.average(gas["Velocities"][near], axis=0, weights=gas["Masses"][near])
-    dv = (gas["Velocities"][near] - vc) * u.peculiar_velocity_to_kms(snap.a)
+    # peculiar velocity plus the Hubble flow H(a) r (rel is in physical kpc)
+    dv = (gas["Velocities"][near] - vc) * u.peculiar_velocity_to_kms(snap.a) + u.hubble_kms_per_kpc(snap.a) * rel
     with np.errstate(invalid="ignore", divide="ignore"):
         vr = np.sum(rel * dv, axis=1) / np.maximum(np.linalg.norm(rel, axis=1), 1e-6)
 

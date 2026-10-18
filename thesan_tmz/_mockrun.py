@@ -30,34 +30,82 @@ TRUE_LOBE_HALF_ANGLE = float(np.degrees(np.arccos(0.7)))
 
 
 #: The feedback configurations this package has to cope with.  They differ in
-#: which *logs exist at all*, which is the thing that breaks analysis code: a
-#: run without BH_BIPOLAR_INJECTION writes no blackhole_bipolar directory and
-#: no injection counters on stdout, and code that assumes they are there fails
-#: on the first read rather than saying so.
+#: which *logs exist at all*, which is the thing that breaks analysis code.
+#: Which logs a configuration writes is decided by :func:`logs_written`, which
+#: encodes the C++ rules; the scenarios only list the Config options.
+#: ``BH_BIPOLAR_INJECTION`` itself never appears: the code derives it from the
+#: _THERMAL/_KINETIC switches (allvars.h), so a real /Config never lists it.
 SCENARIOS = {
-    # LOCAL_INJECTION for both stars and black holes, bipolar reservoirs on.
-    # Everything the package knows how to plot exists.
+    # The production configuration: local injection for stars and BHs, both
+    # collimated channels with the Eddington mode switch, and the energy ledger.
     "local_both": dict(
-        config=("BLACK_HOLES", "BH_TORQUE_LIMITED_ACCRETION", "BH_BIPOLAR_INJECTION",
+        config=("BLACK_HOLES", "BH_TORQUE_LIMITED_ACCRETION",
                 "BH_BIPOLAR_INJECTION_THERMAL", "BH_BIPOLAR_INJECTION_KINETIC",
                 "BH_BIPOLAR_INJECTION_MODE_SWITCH", "LOCAL_INJECTION",
-                "LOCAL_INJECTION_BLACK_HOLES", "LOCAL_INJECTION_WAKEUP_CELLS",
+                "LOCAL_INJECTION_BLACK_HOLES", "LOCAL_INJECTION_BH_LEDGER",
                 "VORONOI", "COOLING", "GFM"),
-        bipolar=True, details="torque", bipolar_params=True,
+        details="torque", bipolar_params=True,
     ),
-    # LOCAL_INJECTION for the stars, kernel-weighted (SPH-style) deposition for
-    # the black holes: no LOCAL_INJECTION_BLACK_HOLES, no bipolar channel.
+    # The same collimated channels deposited by the kernel/cone pass: the only
+    # build that prints the per-step injection counters.
+    "cone_bipolar": dict(
+        config=("BLACK_HOLES", "BH_TORQUE_LIMITED_ACCRETION",
+                "BH_BIPOLAR_INJECTION_THERMAL", "BH_BIPOLAR_INJECTION_KINETIC",
+                "BH_BIPOLAR_INJECTION_MODE_SWITCH", "LOCAL_INJECTION",
+                "VORONOI", "COOLING", "GFM"),
+        details="torque", bipolar_params=True,
+    ),
+    # Curtis's legacy BH_BIPOLAR_FEEDBACK: the only writer of blackhole_bipolar.
+    "legacy_bipolar": dict(
+        config=("BLACK_HOLES", "BH_BONDI_DEFAULT", "BH_THERMALFEEDBACK", "BH_BIPOLAR_FEEDBACK",
+                "VORONOI", "COOLING", "GFM"),
+        details="default", bipolar_params=False,
+    ),
+    # LOCAL_INJECTION_BLACK_HOLES on its own (stars keep kernel feedback),
+    # isotropic thermal, Bondi, with the ledger.
+    "local_bh_only": dict(
+        config=("BLACK_HOLES", "BH_BONDI_DEFAULT", "BH_THERMALFEEDBACK",
+                "LOCAL_INJECTION_BLACK_HOLES", "LOCAL_INJECTION_BH_LEDGER",
+                "VORONOI", "COOLING", "GFM"),
+        details="default", bipolar_params=False,
+    ),
+    # LOCAL_INJECTION for the stars, kernel-weighted deposition for the black
+    # holes, isotropic.
     "local_stars_sph_bh": dict(
-        config=("BLACK_HOLES", "BH_THERMALFEEDBACK", "LOCAL_INJECTION",
-                "LOCAL_INJECTION_WAKEUP_CELLS", "VORONOI", "COOLING", "GFM"),
-        bipolar=False, details="default", bipolar_params=False,
+        config=("BLACK_HOLES", "BH_BONDI_DEFAULT", "BH_THERMALFEEDBACK", "LOCAL_INJECTION",
+                "VORONOI", "COOLING", "GFM"),
+        details="default", bipolar_params=False,
     ),
     # Kernel-weighted deposition for both.  The baseline model.
     "sph_both": dict(
-        config=("BLACK_HOLES", "BH_THERMALFEEDBACK", "VORONOI", "COOLING", "GFM"),
-        bipolar=False, details="default", bipolar_params=False,
+        config=("BLACK_HOLES", "BH_BONDI_DEFAULT", "BH_THERMALFEEDBACK", "VORONOI", "COOLING", "GFM"),
+        details="default", bipolar_params=False,
     ),
 }
+
+
+def logs_written(config):
+    """Which black-hole logs the C++ writes for a given set of Config options.
+
+    Read off arepo ``Arepo2-TMZ-newbh`` at ``0b41480f0b``:
+
+      * ``blackhole_bipolar/``   only BH_BIPOLAR_FEEDBACK (blackhole_mdot.cc:438)
+      * "injected thermal = ..." counters on stdout: the cone pass of
+        BH_BIPOLAR_INJECTION_THERMAL/KINETIC (blackhole_bipolar_injection.cc:700/705);
+        with LOCAL_INJECTION_BLACK_HOLES that pass stops after the axis and
+        prints "axis only ..." instead (blackhole_bipolar_injection.cc:551)
+      * "LOCAL_INJECTION BH LEDGER: ..." on stdout: LOCAL_INJECTION_BH_LEDGER
+        with LOCAL_INJECTION_BLACK_HOLES (local_injection.cc:926)
+    """
+    cfg = set(config)
+    channels = bool({"BH_BIPOLAR_INJECTION_THERMAL", "BH_BIPOLAR_INJECTION_KINETIC"} & cfg)
+    li_bh = "LOCAL_INJECTION_BLACK_HOLES" in cfg
+    return dict(
+        bipolar_log="BH_BIPOLAR_FEEDBACK" in cfg,
+        counters=channels and not li_bh,
+        axis_only=channels and li_bh,
+        ledger=li_bh and "LOCAL_INJECTION_BH_LEDGER" in cfg,
+    )
 
 
 #: Radiative efficiency of the synthetic run: 0.2 like the production runs, and
@@ -79,13 +127,14 @@ def build(root, nsnap=12, seed=42, scenario="local_both"):
     ``blackhole_details`` is written in.
     """
     cfg = SCENARIOS[scenario]
+    logs = logs_written(cfg["config"])
     rng = np.random.default_rng(seed)
     ROOT = root
     OUT = os.path.join(ROOT, "output")
     shutil.rmtree(ROOT, ignore_errors=True)
     os.makedirs(OUT)
     logdirs = ["blackhole_details", "blackhole_mergers"]
-    if cfg["bipolar"]:
+    if logs["bipolar_log"]:
         logdirs.append("blackhole_bipolar")
     for d in logdirs:
         os.makedirs(os.path.join(OUT, d))
@@ -97,6 +146,24 @@ def build(root, nsnap=12, seed=42, scenario="local_both"):
 
     NSNAP = nsnap
     avals = np.linspace(1.0 / 16.0, 1.0 / 5.0, NSNAP)  # z = 15 -> 4
+
+    # The fine time grid of the ASCII logs, and the energy the BHs accreted on it.
+    # Every AGN energy the mock writes (ledger, BH_CumEgyInjection_QM) is
+    # efficiency x eps_r x this, exactly as blackhole_mdot.cc fills the
+    # reservoirs, so the energy book of the self-test closes to round-off.
+    from .units import CLIGHT, SOLAR_MASS, Units
+
+    nt = 900
+    tt = np.linspace(avals[0], avals[-1], nt)
+    grow = (tt / tt[0]) ** 3
+    burst = 1.0 + 3.0 * np.abs(np.sin(np.linspace(0, 25, nt)))
+    mdot_msun_yr = 3e-6 * grow * burst * 10.227          # column 5 of blackholes.txt
+    u_mock = Units(UnitLength_in_cm=UL, UnitMass_in_g=UM, UnitVelocity_in_cm_per_s=UV, HubbleParam=h,
+                   Omega0=Om, OmegaLambda=OL, OmegaBaryon=Ob)
+    age = u_mock.age_gyr(tt)
+    acc_msun = np.concatenate([[0.0], np.cumsum(0.5 * (mdot_msun_yr[1:] + mdot_msun_yr[:-1]) * np.diff(age) * 1e9)])
+    e_acc_code = acc_msun * SOLAR_MASS * CLIGHT ** 2 / u_mock.energy_to_erg   # integral of Mdot c^2 dt, code energy
+    eps_f, eps_th, eps_kin = 0.05, 0.05, 0.02
 
     CEN = np.array([2500.0, 2500.0, 2500.0])
     AXIS = TRUE_AXIS
@@ -189,6 +256,8 @@ def build(root, nsnap=12, seed=42, scenario="local_both"):
                 BH_U=np.array([50.0, 40.0]),
                 Velocities=rng.normal(0, 10, (2, 3)),
                 ParticleIDs=np.array([900001, 900002], dtype=np.uint64),
+                **({"BH_CumEgyInjection_QM": eps_f * EPS_R * np.interp(a, tt, e_acc_code) * np.array([0.8, 0.2])}
+                   if "BH_THERMALFEEDBACK" in cfg["config"] else {}),
             ),
         }
 
@@ -220,15 +289,15 @@ def build(root, nsnap=12, seed=42, scenario="local_both"):
                 for kk, vv in dict(
                     UnitLength_in_cm=UL, UnitMass_in_g=UM, UnitVelocity_in_cm_per_s=UV,
                     HubbleParam=h, Omega0=Om, OmegaLambda=OL, OmegaBaryon=Ob, ComovingIntegrationOn=1, BoxSize=BOX,
-                    BlackHoleRadiativeEfficiency=EPS_R, BlackHoleFeedbackFactor=0.05, BlackHoleAccretionFactor=1.0,
+                    BlackHoleRadiativeEfficiency=EPS_R, BlackHoleFeedbackFactor=eps_f, BlackHoleAccretionFactor=1.0,
                     BlackHoleEddingtonFactor=1.0,
                 ).items():
                     pg.attrs[kk] = vv
                 if cfg["bipolar_params"]:
                     for kk, vv in dict(
                         BHBipolarInjEddThreshold=0.01, BHBipolarInjThermalTheta=30.0,
-                        BHBipolarInjKineticTheta=20.0, BHBipolarInjThermalEfficiency=0.05,
-                        BHBipolarInjKineticEfficiency=0.02, BHBipolarInjColdFraction=0.2,
+                        BHBipolarInjKineticTheta=20.0, BHBipolarInjThermalEfficiency=eps_th,
+                        BHBipolarInjKineticEfficiency=eps_kin, BHBipolarInjColdFraction=0.2,
                         BHBipolarInjColdTemp=1e5, BHBipolarInjMaxVel=3000.0,
                     ).items():
                         pg.attrs[kk] = vv
@@ -253,7 +322,7 @@ def build(root, nsnap=12, seed=42, scenario="local_both"):
             hd = f.create_group("Header")
             hd.attrs["Ngroups_Total"] = ngroups
             hd.attrs["Ngroups_ThisFile"] = ngroups
-            # AREPO2 spelling (fof_io.cc:891).  The mock used to write the
+            # AREPO2 spelling (fof_io.cc:948).  The mock used to write the
             # legacy Nsubgroups_* names, which meant the readers were only ever
             # tested against a catalogue no current run produces.
             hd.attrs["Nsubhalos_Total"] = nsubs
@@ -302,7 +371,7 @@ def build(root, nsnap=12, seed=42, scenario="local_both"):
             spos[1:] += np.array([[6.0, 0, 0], [0, 40.0, 0], [0, 42.0, 3.0], [0, 0, 90.0]])
             S.create_dataset("SubhaloPos", data=spos)
             S.create_dataset("SubhaloVel", data=rng.normal(0, 60, (nsubs, 3)))
-            # Real AREPO2 names (fof_io.cc:156,159,240).  SubhaloGrNr,
+            # Real AREPO2 names (fof_io.cc:186,189,293).  SubhaloGrNr,
             # SubhaloFlag and SubhaloSFRinRad appear nowhere in the AREPO2
             # source -- writing them here is what let the readers fall back to
             # zeros on real data while the selftest passed.
@@ -343,11 +412,6 @@ def build(root, nsnap=12, seed=42, scenario="local_both"):
     np.savetxt(os.path.join(root, "ExpansionList.list"), avals)
 
     # ------------------------------------------------------------------ logs
-    nt = 900
-    tt = np.linspace(avals[0], avals[-1], nt)
-    grow = (tt / tt[0]) ** 3
-    burst = 1.0 + 3.0 * np.abs(np.sin(np.linspace(0, 25, nt)))
-
     with open(os.path.join(OUT, "blackholes.txt"), "w") as f:
         for t, g, b in zip(tt, grow, burst):
             mass = 1.7e-4 * g
@@ -382,9 +446,9 @@ def build(root, nsnap=12, seed=42, scenario="local_both"):
                         f.write("BH=%d %g %g %g %g %g\n"
                                 % (bid, t, 1.5e-4 * g * sc, 3e-6 * g * b * sc, 0.02 * g, 12.0 + 3.0 * np.sin(j * 0.05)))
 
-    # blackhole_bipolar: 9 cols, axis wandering slowly.  Only exists when the
-    # bipolar channel is compiled in -- a kernel-weighted run writes nothing.
-    if cfg["bipolar"]:
+    # blackhole_bipolar: 9 cols, axis wandering slowly.  Only BH_BIPOLAR_FEEDBACK
+    # writes it (see logs_written).
+    if logs["bipolar_log"]:
         for rank in range(2):
             with open(os.path.join(OUT, "blackhole_bipolar", "blackhole_bipolar_%d.txt" % rank), "w") as f:
                 for j, t in enumerate(tt):
@@ -407,7 +471,7 @@ def build(root, nsnap=12, seed=42, scenario="local_both"):
         for j, (t, g, b) in enumerate(zip(tt, grow, burst)):
             z = 1.0 / t - 1.0
             f.write("Sync-Point %d, Time: %g, Redshift: %g, Systemstep: 1e-4, Dloga: 1e-4\n" % (j, t, z))
-            if cfg["bipolar"] and j % 3 == 0:
+            if logs["counters"] and j % 3 == 0:
                 th = 1e-3 * g * b if b > 2 else 0.0
                 kin = 0.0 if b > 2 else 4e-4 * g
                 nth, nk = (2, 0) if b > 2 else (0, 2)
@@ -416,9 +480,27 @@ def build(root, nsnap=12, seed=42, scenario="local_both"):
                         "empty cone = %d, clipped cells = %d; took %g sec\n"
                         % (th, kin, nth, nk, 1 if j % 97 == 0 else 0, 1 if j % 31 == 0 else 0,
                            1 if j % 17 == 0 else 0, int(rng.integers(0, 5)), 0.001 + 0.002 * rng.random()))
+            if (logs["axis_only"] or logs["ledger"]) and j % 3 == 0:
+                # what a LOCAL_INJECTION_BLACK_HOLES step prints instead
+                if logs["axis_only"]:
+                    f.write("BH_BIPOLAR_INJECTION: Start collimated feedback injection\n")
+                    f.write("BH_BIPOLAR_INJECTION: axis only (deposition handed to LOCAL_INJECTION_BLACK_HOLES)\n")
+                f.write("LOCAL_INJECTION BLACK HOLE FEEDBACK: Evaluating 2 black holes\n")
+                f.write("LOCAL_INJECTION BLACK HOLE FEEDBACK: inject energy\n")
+                if logs["ledger"]:
+                    de = e_acc_code[j] - e_acc_code[max(j - 3, 0)] if j else 0.0   # accreted since the last line
+                    iso = eps_f * EPS_R * de if "BH_THERMALFEEDBACK" in cfg["config"] else 0.0
+                    # with the mode switch a step feeds one collimated channel: thermal when bursting
+                    coll = (eps_th * EPS_R * de if b > 2 else 0.0) if logs["axis_only"] else 0.0
+                    kin = (0.0 if b > 2 else eps_kin * EPS_R * de) if logs["axis_only"] else 0.0
+                    f.write("LOCAL_INJECTION BH LEDGER: drained iso %g coll %g kin %g | thermal asked %g applied %g | "
+                            "kinetic asked %g applied %g | |sum dp|/sum|dp| %g\n"
+                            % (iso, coll, kin, iso + coll, 0.999 * (iso + coll), kin, 0.98 * kin, 1e-3 if kin else 0.0))
         # a deliberately truncated final line, like a killed run
-        if cfg["bipolar"]:
+        if logs["counters"]:
             f.write("BH_BIPOLAR_INJECTION: injected therm")
+        elif logs["ledger"]:
+            f.write("LOCAL_INJECTION BH LEDGER: drained iso 1.2e")
 
     # a truncated last line in blackholes.txt too
     with open(os.path.join(OUT, "blackholes.txt"), "a") as f:

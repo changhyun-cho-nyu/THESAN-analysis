@@ -55,7 +55,9 @@ def run(workdir=None, keep=False, make_figures=True):
     apply_style()
 
     print("building a synthetic run in %s" % root)
-    _mockrun.build(root, nsnap=8)
+    # The cone-path build: the one configuration that prints the injection
+    # counters the stdout parser is tested on.
+    _mockrun.build(root, nsnap=8, scenario="cone_bipolar")
     out = os.path.join(root, "output")
 
     # -- units and cosmology ------------------------------------------------
@@ -68,10 +70,23 @@ def run(workdir=None, keep=False, make_figures=True):
     c.check("Mdot_Edd(1e8, eps=0.2) = 1.11 Msun/yr", abs(u.eddington_rate_msun_per_yr(1e8, 0.2) - 1.11) < 0.01)
     c.check("no Eddington efficiency -> lambda is NaN, not a default",
             u.eddington_efficiency is None and np.isnan(u.eddington_ratio(1.0, 1e8)))
+    # expected AGN energy: constant Mdot = 1 Msun/yr for 1 Gyr, eps_f = 0.05, eps_r = 0.2
+    #   -> 0.05 * 0.2 * 1e9 Msun c^2 = 1.7876e61 erg
+    un = units.Units(ComovingIntegrationOn=False)
+    bt = {"time": np.array([0.0, 1.0 / un.UnitTime_in_Gyr]), "mdot_msun_per_yr": np.array([1.0, 1.0])}
+    ex = bh_logs.expected_agn_energy(np.array([1.0]), bt, {"BlackHoleRadiativeEfficiency": 0.2, "BlackHoleFeedbackFactor": 0.05},
+                                     {"BH_THERMALFEEDBACK"}, un)
+    c.check("expected AGN energy: 1 Msun/yr x 1 Gyr, eps_f eps_r = 0.01 -> 1.788e61 erg",
+            ex is not None and abs(ex["hi"][0] / 1.7876e61 - 1) < 1e-3, "got %s" % (ex and ex["hi"]))
+    c.check("expected AGN energy: no prediction without the parameters (no 0.1 default)",
+            bh_logs.expected_agn_energy(np.array([1.0]), bt, {}, {"BH_THERMALFEEDBACK"}, un) is None)
     c.check("BH_VARIABLE_RADIATIVE_EFFICIENCY -> eps = 1/16, as blackhole_mdot_eddington()",
             units._eddington_efficiency(0.2, {"BH_VARIABLE_RADIATIVE_EFFICIENCY"}) == 1.0 / 16.0
             and units._eddington_efficiency(0.2, set()) == 0.2)
     c.check("Delta_vir(z=0) = 102", abs(u.delta_vir(1.0) - 102.4) < 1.0)
+    c.check("Hubble flow: H0 = 67.74 km/s/Mpc -> 0.06774 km/s per kpc at a = 1",
+            abs(u.hubble_kms_per_kpc(1.0) - 0.06774) < 1e-6)
+    c.check("Hubble flow is zero for a non-comoving run", units.Units(ComovingIntegrationOn=False).hubble_kms_per_kpc(0.5) == 0.0)
     # age(a) and its inverse must round-trip, since the redshift axis uses both.
     from .plotstyle import _invert_age
 
@@ -97,7 +112,7 @@ def run(workdir=None, keep=False, make_figures=True):
     c.check("split snapshot reassembled (gas)", snap.part(0, ["Masses"])["count"] == 4000)
     c.check("split snapshot reassembled (stars)", snap.part(4, ["Masses"])["count"] == 800)
     c.check("MassTable synthesised for DM", np.allclose(snap.part(1, ["Masses"])["Masses"], 3e-4))
-    c.check("/Config read back", "BH_BIPOLAR_INJECTION" in snap.config)
+    c.check("/Config read back", "BH_BIPOLAR_INJECTION_THERMAL" in snap.config)
     c.check("/Parameters read back", abs(snap.parameters["BHBipolarInjEddThreshold"] - 0.01) < 1e-12)
     c.check("units auto-detected from snapshot", abs(snap.units.h - 0.6774) < 1e-9)
     c.check("Eddington efficiency read from /Parameters (0.2)", snap.units.eddington_efficiency == _mockrun.EPS_R)
@@ -121,9 +136,7 @@ def run(workdir=None, keep=False, make_figures=True):
     c.check("details: f_disk present and in [0,1]", np.all((det["f_disk"] >= 0) & (det["f_disk"] <= 1)))
     c.check("most massive BH identified", bh_logs.most_massive_bh_id(det) == 900001)
 
-    bip = bh_logs.read_bh_bipolar(out)
-    c.check("bipolar log read", bip["time"].size > 0)
-    c.check("bipolar jhat is a unit vector", np.allclose(np.linalg.norm(bip["jhat"], axis=1), 1.0, atol=1e-9))
+    c.check("no blackhole_bipolar log for a BH_BIPOLAR_INJECTION build", bh_logs.read_bh_bipolar(out)["time"].size == 0)
 
     mg = bh_logs.read_bh_mergers(out)
     c.check("merger log: 2 events", mg["time"].size == 2)
@@ -279,6 +292,50 @@ def run(workdir=None, keep=False, make_figures=True):
     c.check("history: BH mass is positive and growing", np.all(np.diff(hist["bh_mass_msun"]) > 0))
     c.check("history: stellar mass increases with aperture", np.all(history.key(hist, "mstar", 1.0) <= history.key(hist, "mstar", 30.0)))
     c.check("history: gas phases sum to the total", _phases_sum_ok(hist))
+    # -- step 3: the galaxy's BH is ONE black hole, not a sum ---------------
+    cen_m, sum_m, mdyn_ok = [], [], True
+    for n_, cnt in zip(hist["snapnum"].astype(int), range(hist["snapnum"].size)):
+        s_ = io.Snapshot(out, n_)
+        b_ = s_.part(5, ["BH_Mass", "ParticleIDs", "Masses", "Coordinates"])
+        cen_m.append(b_["BH_Mass"][b_["ParticleIDs"] == 900001][0] * s_.units.mass_to_msun)
+        sum_m.append(b_["BH_Mass"].sum() * s_.units.mass_to_msun)
+    c.check("history: M_BH is the central BH (900001), not the sum of both",
+            np.allclose(hist["bh_mass_msun"], cen_m, rtol=1e-10) and np.all(hist["bh_id"] == 900001))
+    c.check("history: the sum is kept separately as bh_mass_sum_msun", np.allclose(hist["bh_mass_sum_msun"], sum_m, rtol=1e-10))
+    s_ = io.Snapshot(out, int(hist["snapnum"][-1]))
+    cen_, _ = galaxy.auto_centre(s_)
+    m_other = galaxy.measure(s_, cen_, bh_id=900002)
+    b_ = s_.part(5, ["BH_Mass", "ParticleIDs"])
+    c.check("measure(bh_id=...) follows the requested BH",
+            m_other["bh_id"] == 900002 and np.isclose(m_other["bh_mass_msun"],
+                                                       b_["BH_Mass"][b_["ParticleIDs"] == 900002][0] * s_.units.mass_to_msun))
+    m_ = galaxy.measure(s_, cen_)
+    bh_ = s_.part(5, ["Coordinates", "Masses"])
+    rb_ = io.radius_from(bh_["Coordinates"], cen_, s_.boxsize) * s_.units.length_to_kpc(s_.a)
+    ok_ = all(np.isclose(m_["mtot_r%g" % R_] - m_["mgas_r%g" % R_] - m_["mstar_r%g" % R_] - m_["mdm_r%g" % R_],
+                         np.sum(bh_["Masses"][rb_ <= R_]) * s_.units.mass_to_msun, rtol=1e-9, atol=1e-6)
+              for R_ in (1.0, 2.0, 5.0, 10.0, 30.0))
+    c.check("mtot_rR includes only the BHs inside R", ok_)
+
+    # -- feature A: every black hole ----------------------------------------
+    from . import bh_population
+    bt = bh_population.bh_table(s_)
+    b5 = s_.part(5, ["BH_Mass", "ParticleIDs", "BH_Mdot", "BH_MdotEddington", "Coordinates"])
+    c.check("bh_table: one row per BH (2)", bt["count"] == 2 and set(bt["id"]) == {900001, 900002})
+    o_ = np.argsort(b5["ParticleIDs"])
+    c.check("bh_table: masses are BH_Mass in Msun",
+            np.allclose(np.sort(bt["mass_msun"]), np.sort(b5["BH_Mass"] * s_.units.mass_to_msun), rtol=1e-10))
+    c.check("bh_table: lambda_Edd is the code's own (BH_Mdot / BH_MdotEddington)",
+            bt["_eddington_source"] == "BH_MdotEddington"
+            and np.allclose(bt["eddington_ratio"][np.argsort(bt["id"])], (b5["BH_Mdot"] / b5["BH_MdotEddington"])[o_]))
+    cat_ = catalog.load(s_)
+    k1 = int(np.where(bt["id"] == 900001)[0][0])
+    sp = np.asarray(cat_.s("pos"))[cat_.target_index()]
+    off_ = io.radius_from(b5["Coordinates"][b5["ParticleIDs"] == 900001][0], sp, s_.boxsize) * s_.units.length_to_kpc(s_.a)
+    c.check("bh_table: the central BH is hosted by the target galaxy, as a central, at the right offset",
+            bt["host_subhalo"][k1] == cat_.target_index() and bt["host_is_central"][k1]
+            and np.isclose(bt["offset_kpc"][k1], off_))
+    _check_local_mesh(c, s_)
     c.check("history: cache round-trips", _cache_roundtrip_ok(out, hist))
     lam_expect = hist["bh_mdot_msun_per_yr"] / hist["_units"].eddington_rate_msun_per_yr(hist["bh_mass_msun"], _mockrun.EPS_R)
     c.check("history: Eddington ratio uses the run's eps (0.2), not 0.1",
@@ -318,6 +375,7 @@ def run(workdir=None, keep=False, make_figures=True):
         rc = run_all.main([root, "--figdir", figdir, "--rebuild"])
         made = [f for f in os.listdir(figdir) if f.endswith(".png")] if os.path.isdir(figdir) else []
         c.check("run_all exits 0", rc == 0)
+        c.check("run_all wrote the local-mesh page (18)", os.path.exists(os.path.join(figdir, "18_bh_local_mesh.html")))
         c.check("run_all produced >= 19 figures", len(made) >= 19, "got %d" % len(made))
         c.check("report.txt written", os.path.exists(os.path.join(figdir, "report.txt")))
 
@@ -330,6 +388,65 @@ def run(workdir=None, keep=False, make_figures=True):
     else:
         print("\nworkdir kept at %s" % tmp)
     return rc
+
+
+def _check_local_mesh(c, snap):
+    """Feature B: each BH's cell in its local Voronoi mesh."""
+    from . import local_mesh as lm
+
+    print("\n[local mesh]")
+    if lm.missing_dependencies():
+        c.check("local mesh: scipy and plotly installed", False, "missing %s" % lm.missing_dependencies())
+        return
+    meshes = lm.all_bh_meshes(snap)
+    c.check("local mesh: a cell for each BH (2)", len(meshes) == 2)
+    gas = snap.part(io.PT_GAS, ["Coordinates", "Masses", "Velocities", "InternalEnergy"])
+    bh = snap.part(io.PT_BH, ["Coordinates", "ParticleIDs"])
+    box = snap.boxsize
+    for m in meshes:
+        tag = "local mesh BH %d" % m["id"]
+        f_ = m["faces"]
+        x_bh = bh["Coordinates"][bh["ParticleIDs"] == m["id"]][0]
+        # the offset is ~1e-12 of the coordinates, so float64 rounding alone leaves ~1e-4 of it
+        c.check("%s: injection point = BH + 1e-12 box (0.6, 0.48, 0.64)" % tag,
+                np.allclose(io.periodic_delta(m["src"], x_bh, box), 1e-12 * box * np.array([0.6, 0.48, 0.64]),
+                            rtol=1e-3, atol=0))
+        c.check("%s: faces close to 4 pi" % tag, abs(m["omega_tot"] / (4 * np.pi) - 1) < 1e-6,
+                "got %.8f" % (m["omega_tot"] / (4 * np.pi)))
+        # Voronoi vertices are equidistant from the source and the face's neighbour, and no
+        # generating point is closer (empty sphere) -- checked against ALL the gas, by brute force.
+        d_all = io.periodic_delta(gas["Coordinates"], m["src"], box)
+        worst_eq, worst_empty = 0.0, 0.0
+        for f in f_:
+            for v in f["verts"]:
+                rv = np.linalg.norm(v)
+                worst_eq = max(worst_eq, abs(np.linalg.norm(v - f["offset"]) - rv) / rv)
+                worst_empty = max(worst_empty, (rv - np.min(np.linalg.norm(d_all - v, axis=1))) / rv)
+        c.check("%s: vertices on the bisector planes (%.1e)" % (tag, worst_eq), worst_eq < 1e-8)
+        c.check("%s: no gas point inside any vertex's sphere (%.1e)" % (tag, worst_empty), worst_empty < 1e-8)
+        c.check("%s: the nearest gas cell (the host) is a face neighbour" % tag,
+                m["host"] in {f["nb_global"] for f in f_})
+        c.check("%s: isotropic shares sum to 1, |sum w| = 0" % tag,
+                np.isclose(sum(f["wscalar"] for f in f_), 1.0, rtol=1e-12)
+                and np.linalg.norm(np.sum([f["w"] for f in f_], axis=0)) < 1e-10)
+        ok_c = all(x is not None and np.isclose(x.sum(), 1.0, rtol=1e-12) for x in (m["coll_therm"], m["coll_kin"]))
+        c.check("%s: thermal and kinetic collimated shares each sum to 1" % tag, ok_c)
+        if m["axis"] is not None and ok_c:
+            cosa = np.array([abs(f["w"] @ m["axis"]) / np.linalg.norm(f["w"]) for f in f_])
+            iso = np.array([f["wscalar"] for f in f_])
+            c.check("%s: kinetic (20 deg) favours the polar faces more than thermal (30 deg) than isotropic" % tag,
+                    cosa @ m["coll_kin"] > cosa @ m["coll_therm"] > cosa @ iso)
+    m1 = next((m for m in meshes if m["id"] == 900001), None)
+    ang = (np.degrees(np.arccos(min(1.0, abs(float(m1["axis"] @ _mockrun.TRUE_AXIS)))))
+           if m1 is not None and m1["axis"] is not None else 999.0)
+    c.check("local mesh: central BH's axis from the cold disk, within 3 deg of the true disk axis (%.2f)" % ang,
+            m1 is not None and m1["cold_disk"] and ang < 3.0)
+    c.check("local mesh: profile exponent gives |cos theta|^N = 1/2",
+            np.isclose(np.cos(np.radians(20.0)) ** lm.profile_exponent(20.0), 0.5)
+            and lm.profile_exponent(0.0) == 0.0 and lm.profile_exponent(91.0) == 0.0)   # as the C++: cos <= 0 or 1
+    page = lm.local_mesh_page(snap, os.path.join(os.path.dirname(snap.output_dir), "lm_test.html"), max_bhs=1)
+    c.check("local mesh: page written for the top BH only (--mesh-bhs 1)",
+            page is not None and open(page).read().count("<h2>BH ") == 1)
 
 
 def _stack_rows(rows):
@@ -419,43 +536,85 @@ def _check_scenarios(c, tmp):
     from . import run_all
 
     expect = {
-        # scenario            collimated  applicable figures    n/a figures
-        "local_both":         (True,      {"06", "07", "13"},   set()),
-        "local_stars_sph_bh": (False,     {"13"},               {"06", "07"}),
-        "sph_both":           (False,     {"13"},               {"06", "07"}),
+        # scenario              collimated  BH deposition    stellar deposition  details layout
+        "local_both":          (True,       "voronoi-local", "voronoi-local",    "torque"),
+        "cone_bipolar":        (True,       "kernel",        "voronoi-local",    "torque"),
+        "legacy_bipolar":      (True,       "kernel",        "kernel",           "default"),
+        "local_bh_only":       (False,      "voronoi-local", "kernel",           "default"),
+        "local_stars_sph_bh":  (False,      "kernel",        "voronoi-local",    "default"),
+        "sph_both":            (False,      "kernel",        "kernel",           "default"),
     }
 
-    for name, (collimated, want, want_na) in expect.items():
+    for name, (collimated, bh_dep, st_dep, layout) in expect.items():
         print("\n[scenario: %s]" % name)
         root = os.path.join(tmp, "sc_" + name)
         _mockrun.build(root, nsnap=6, scenario=name)
         out = os.path.join(root, "output")
         figdir = os.path.join(root, "figures")
+        # What the C++ writes for this Config -- the reference the package is tested against.
+        truth = _mockrun.logs_written(_mockrun.SCENARIOS[name]["config"])
+        want = {"13", "16", "17"} | ({"06"} if truth["counters"] else set()) | ({"07"} if truth["bipolar_log"] else set())
+        want_na = {"06", "07"} - want
 
         snap = io.Snapshot(out, 5)
         summ = diagnostics.model_summary(snap)
         c.check("%s: collimation classified" % name, summ["collimated"] is collimated,
                 "got %s" % summ["collimated"])
-        c.check("%s: BH deposition classified" % name,
-                summ["bh_deposition"] == ("voronoi-local" if name == "local_both" else "kernel"),
+        c.check("%s: BH deposition classified" % name, summ["bh_deposition"] == bh_dep,
                 "got %s" % summ["bh_deposition"])
-        c.check("%s: stellar deposition classified" % name,
-                summ["stellar_deposition"] == ("kernel" if name == "sph_both" else "voronoi-local"),
+        c.check("%s: stellar deposition classified" % name, summ["stellar_deposition"] == st_dep,
                 "got %s" % summ["stellar_deposition"])
 
         # The logs must read without raising even when the files do not exist.
         logs = evolution.collect_logs(out, run_dir=root)
         c.check("%s: log collection survives the missing logs" % name, isinstance(logs, dict))
-        c.check("%s: bipolar log present iff the channel is on" % name,
-                (np.size(logs["bipolar"].get("time", [])) > 0) is collimated)
-        c.check("%s: injection counters present iff the channel is on" % name,
-                (np.size(logs["injection"].get("time", [])) > 0) is collimated)
-        c.check("%s: details layout detected" % name,
-                logs["details"].get("_layout") == ("torque" if name == "local_both" else "default"),
+        c.check("%s: blackhole_bipolar log read iff the build writes it" % name,
+                (np.size(logs["bipolar"].get("time", [])) > 0) is truth["bipolar_log"])
+        c.check("%s: injection counters read iff the build prints them" % name,
+                (np.size(logs["injection"].get("time", [])) > 0) is truth["counters"])
+        if truth["bipolar_log"]:
+            c.check("%s: bipolar jhat is a unit vector" % name,
+                    np.allclose(np.linalg.norm(logs["bipolar"]["jhat"], axis=1), 1.0, atol=1e-9))
+        c.check("%s: details layout detected" % name, logs["details"].get("_layout") == layout,
                 "got %s" % logs["details"].get("_layout"))
 
         rc = run_all.main([root, "--figdir", figdir, "--rebuild"])
         c.check("%s: run_all exits 0" % name, rc == 0)
+
+        # -- the AGN energy book (step 5) ------------------------------------
+        cfg_ = set(_mockrun.SCENARIOS[name]["config"])
+        want_src = ("ledger" if truth["ledger"] else "counters" if truth["counters"]
+                    else "snapshots" if "BH_THERMALFEEDBACK" in cfg_ else None)
+        if truth["ledger"]:
+            c.check("%s: ledger lines parsed (300)" % name, logs["ledger"]["time"].size == 300,
+                    "got %d" % logs["ledger"]["time"].size)
+        hist_ = history.load_history(out, verbose=False)
+        src_ = bh_logs.agn_energy_sources(hist_, logs, snap.units)
+        c.check("%s: AGN energy taken from the %s" % (name, want_src), src_["source"] == want_src,
+                "got %s" % src_["source"])
+        if want_src in ("ledger", "snapshots"):
+            rel_ = src_["released"]
+            ex_ = bh_logs.expected_agn_energy(rel_[0], logs["blackholes"], summ["params"], summ["config"], snap.units)
+            ok_t = rel_[1] > 0
+            if np.allclose(ex_["lo"], ex_["hi"]):
+                # blackholes.txt is printed with %14e (7 digits in time and Mdot), so the
+                # prediction integrated from it is good to ~1e-4, in a real run as here.
+                r_ = rel_[1][ok_t] / ex_["hi"][ok_t]
+                c.check("%s: released = expected energy (max |ratio-1| %.2g)" % (name, np.max(np.abs(r_ - 1))),
+                        np.allclose(r_, 1.0, rtol=1e-3))
+            else:
+                c.check("%s: released energy inside the mode-switch band" % name,
+                        np.all(rel_[1][ok_t] >= ex_["lo"][ok_t] * (1 - 1e-3))
+                        and np.all(rel_[1][ok_t] <= ex_["hi"][ok_t] * (1 + 1e-3)))
+        if want_src == "ledger":
+            # the mock applies 0.999 of the thermal and 0.98 of the kinetic energy it was asked for
+            L_ = logs["ledger"]
+            dep_expect = np.cumsum(0.999 * (L_["drained_iso"] + L_["drained_coll"]) + 0.98 * L_["drained_kin"])
+            dep_ = src_["deposited"]
+            ok_d = dep_expect > 0
+            c.check("%s: deposited energy = what the ledger says reached the gas" % name,
+                    np.allclose(dep_[1][ok_d] / snap.units.energy_to_erg, dep_expect[ok_d], rtol=1e-5)
+                    and np.all(dep_[1] <= rel_[1] * (1 + 1e-12)))
         made = {f.split("_")[0] for f in os.listdir(figdir) if f.endswith(".png")}
 
         c.check("%s: the snapshot history was built (01 and 03 produced)" % name,
@@ -465,8 +624,9 @@ def _check_scenarios(c, tmp):
         c.check("%s: does not produce %s" % (name, ",".join(sorted(want_na)) or "(nothing)"),
                 not (want_na & made), "unexpectedly present: %s" % sorted(want_na & made))
 
+        c.check("%s: 18_bh_local_mesh.html written" % name, os.path.exists(os.path.join(figdir, "18_bh_local_mesh.html")))
         rows = diagnostics.figure_applicability(
-            summ, logs, [os.path.join(figdir, f) for f in os.listdir(figdir) if f.endswith(".png")])
+            summ, logs, [os.path.join(figdir, f) for f in os.listdir(figdir) if f.endswith((".png", ".html"))])
         status = {r[0]: r[2] for r in rows}
         c.check("%s: nothing reported as a real gap" % name,
                 not [k for k, v in status.items() if v == diagnostics.MISSING],
@@ -474,6 +634,14 @@ def _check_scenarios(c, tmp):
         for fid in want_na:
             c.check("%s: %s classified n/a, not missing" % (name, fid),
                     status.get(fid) == diagnostics.NOT_APPLICABLE, "got %s" % status.get(fid))
+        if truth["axis_only"]:
+            reason = {r[0]: r[3] for r in rows}.get("06", "")
+            c.check("%s: 06 n/a explains the LOCAL_INJECTION_BLACK_HOLES design" % name,
+                    "LOCAL_INJECTION_BLACK_HOLES" in reason and "LEDGER" in reason, "got %r" % reason)
+        note18 = {r[0]: r[3] for r in rows}.get("18", "")
+        c.check("%s: 18 says when the shares are hypothetical (kernel BH deposit)" % name,
+                ("LOCAL_INJECTION_BLACK_HOLES is off" in note18) is ("LOCAL_INJECTION_BLACK_HOLES" not in cfg_),
+                "got %r" % note18)
         # Every applicability reason must actually explain something.
         c.check("%s: every non-produced figure carries a reason" % name,
                 all(r[3] for r in rows if r[2] != diagnostics.PRODUCED))
