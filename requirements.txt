@@ -1,0 +1,7 @@
+numpy
+h5py
+matplotlib
+# optional: smoother projection maps (fig 12) and the 3D local-mesh page (fig 18)
+scipy
+# optional: the 3D local-mesh page (fig 18)
+plotly
