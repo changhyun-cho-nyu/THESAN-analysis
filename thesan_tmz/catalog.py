@@ -331,8 +331,7 @@ class Catalog:
         if mdot is not None:
             out["bh_mdot_msun_per_yr"] = float(np.asarray(mdot)[i] * u.mdot_to_msun_per_yr)
             if out.get("bh_mass_msun", 0.0) > 0:
-                edd = u.eddington_rate_msun_per_yr(out["bh_mass_msun"])
-                out["eddington_ratio"] = out["bh_mdot_msun_per_yr"] / edd if edd > 0 else np.nan
+                out["eddington_ratio"] = float(u.eddington_ratio(out["bh_mdot_msun_per_yr"], out["bh_mass_msun"]))
 
         hr = self.s("halfmassradtype")
         if hr is not None:

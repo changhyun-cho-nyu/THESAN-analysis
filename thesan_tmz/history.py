@@ -6,14 +6,26 @@ downstream wants the same handful of scalars, so the result is cached to a
 single ``.npz``.  Delete the cache (or pass ``rebuild=True``) after changing
 anything in :mod:`galaxy`.
 
-The cache stores the aperture radii and the centring method it used, and
-:func:`load_history` refuses to reuse a cache built with different settings --
-silently mixing 5 kpc and 30 kpc apertures in one plot is exactly the sort of
-error that survives review.
+What makes a cached row reusable (see :func:`load_history`):
+
+  * the same settings -- aperture radii, centring, BH id, group -- since
+    silently mixing 5 kpc and 30 kpc apertures in one plot is exactly the sort
+    of error that survives review;
+  * the same code: a fingerprint of the modules that compute the numbers
+    (``_HISTORY_SOURCES``), so fixing a bug in :mod:`galaxy` can never leave the
+    old numbers in the figures;
+  * the same snapshot on disk: each snapshot's files (and its group catalogue)
+    are recorded by size and modification time, so a snapshot that is new,
+    rewritten after a restart, or whose catalogue appeared later is measured
+    again.
+
+Only what fails these tests is re-measured, so on a running simulation a new
+call costs the new snapshots, not the whole history.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import traceback
@@ -148,11 +160,82 @@ def build_history(
 # ---------------------------------------------------------------------------
 
 
+#: The modules whose code decides the numbers in a history.  Editing any of them
+#: invalidates every cached row (see :func:`_code_fingerprint`).
+_HISTORY_SOURCES = ("units.py", "arepo_io.py", "catalog.py", "galaxy.py", "history.py")
+
+
+def _code_fingerprint():
+    """Short hash of the source of ``_HISTORY_SOURCES``."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    h = hashlib.sha1()
+    for name in _HISTORY_SOURCES:
+        with open(os.path.join(here, name), "rb") as fh:
+            h.update(fh.read())
+    return h.hexdigest()[:12]
+
+
 def _meta(radii_kpc, centre_prefer, bh_id, group_index):
     return json.dumps(
-        {"radii": list(map(float, radii_kpc)), "centre": list(centre_prefer), "bh_id": bh_id, "group": group_index},
+        {"radii": list(map(float, radii_kpc)), "centre": list(centre_prefer), "bh_id": bh_id, "group": group_index,
+         "code": _code_fingerprint()},
         sort_keys=True,
     )
+
+
+def _snapshot_signature(output_dir, num):
+    """'total size:latest mtime' of a snapshot's files and its group catalogue.
+
+    The catalogue is included because :func:`galaxy.measure` reads it: a
+    snapshot measured before its catalogue was written must be measured again
+    once it exists.  Returns None if the snapshot is not on disk.
+    """
+    try:
+        files = io.snapshot_files(output_dir, num)
+    except FileNotFoundError:
+        return None
+    try:
+        files = files + io.group_files(output_dir, num)
+    except FileNotFoundError:
+        pass
+    st = [os.stat(f) for f in files]
+    return "%d:%d" % (sum(x.st_size for x in st), max(x.st_mtime_ns for x in st))
+
+
+def _take_rows(hist, keep):
+    """The rows of a history where the boolean mask ``keep`` is True."""
+    out = {k: (v[keep] if not k.startswith("_") else v) for k, v in hist.items()}
+    return out
+
+
+def _merge_histories(a, b):
+    """Rows of ``a`` and ``b`` together, sorted by snapshot number.
+
+    A key present in only one of them is padded with NaN (or '' for strings)
+    of the right shape in the other, exactly as :func:`build_history` pads a
+    quantity that is missing from some snapshots.
+    """
+    parts = [h for h in (a, b) if h is not None and np.size(h.get("snapnum", [])) > 0]
+    if not parts:
+        return None
+    out = {}
+    for k in sorted({k for h in parts for k in h if not k.startswith("_")}):
+        proto = np.asarray(next(h[k] for h in parts if k in h))
+        pieces = []
+        for h in parts:
+            n = len(h["snapnum"])
+            if k in h:
+                pieces.append(np.asarray(h[k]))
+            elif proto.dtype.kind in "US":
+                pieces.append(np.full(n, "", dtype=proto.dtype))
+            else:
+                pieces.append(np.full((n,) + proto.shape[1:], np.nan))
+        out[k] = np.concatenate(pieces)
+    order = np.argsort(out["snapnum"], kind="stable")
+    out = {k: v[order] for k, v in out.items()}
+    for k in ("_radii_kpc", "_units"):
+        out[k] = next((h[k] for h in reversed(parts) if h.get(k) is not None), None)
+    return out
 
 
 def load_history(
@@ -166,41 +249,71 @@ def load_history(
     nums=None,
     verbose=True,
 ):
-    """Return a cached history, rebuilding it when stale or missing."""
+    """Return the history of snapshots ``nums`` (default: all on disk).
+
+    Rows are taken from the cache when the settings, the code and the snapshot
+    files are unchanged, and measured otherwise; the cache is then updated.  A
+    subset request returns only those rows but never shrinks the cache.
+    ``rebuild=True`` ignores the cache entirely.
+    """
     cache_path = cache_path or os.path.join(output_dir, "analysis_history.npz")
     meta = _meta(radii_kpc, centre_prefer, bh_id, group_index)
+    wanted = io.available_snapshots(output_dir) if nums is None else sorted({int(n) for n in nums})
 
+    cached, sigs = None, {}
     if os.path.exists(cache_path) and not rebuild:
         try:
             z = np.load(cache_path, allow_pickle=True)
             if str(z["_meta"]) == meta:
-                hist = {k: z[k] for k in z.files if not k.startswith("_")}
-                hist["_radii_kpc"] = z["_radii_kpc"]
-                hist["_units"] = _units_from_cache(z)
-                if verbose:
-                    print("  [history] loaded cache %s (%d snapshots)" % (cache_path, hist["snapnum"].size))
-                return hist
-            if verbose:
-                print("  [history] cache settings changed -- rebuilding")
+                cached = {k: z[k] for k in z.files if not k.startswith("_")}
+                cached["_radii_kpc"] = z["_radii_kpc"]
+                cached["_units"] = _units_from_cache(z)
+                sigs = json.loads(str(z["_snapsig"])) if "_snapsig" in z.files else {}
+            elif verbose:
+                print("  [history] cache built with other settings or older code -- rebuilding")
         except (OSError, KeyError, ValueError) as exc:
             if verbose:
                 print("  [history] unreadable cache (%s) -- rebuilding" % exc)
 
-    hist = build_history(
-        output_dir, nums=nums, radii_kpc=radii_kpc, centre_prefer=centre_prefer, bh_id=bh_id, group_index=group_index, verbose=verbose
-    )
-    save_history(hist, cache_path, meta)
-    return hist
+    current = {n: _snapshot_signature(output_dir, n) for n in wanted}
+    todo = [n for n in wanted if current[n] is not None and sigs.get(str(n)) != current[n]]
+    if verbose and cached is not None:
+        print("  [history] cache %s: %d of %d snapshot(s) reused, %d to measure"
+              % (cache_path, len(wanted) - len(todo), len(wanted), len(todo)))
+
+    new = None
+    if todo:
+        try:
+            new = build_history(output_dir, nums=todo, radii_kpc=radii_kpc, centre_prefer=centre_prefer,
+                                bh_id=bh_id, group_index=group_index, verbose=verbose)
+        except RuntimeError as exc:  # every snapshot in ``todo`` failed
+            if verbose:
+                print("  [history] %s" % exc)
+        for n in todo:  # remembered whether or not it could be measured
+            sigs[str(n)] = current[n]
+
+    if cached is not None and todo:  # drop the stale versions of re-measured rows
+        cached = _take_rows(cached, ~np.isin(cached["snapnum"], todo))
+    hist = _merge_histories(cached, new)
+    if hist is None:
+        raise RuntimeError("no snapshot could be measured under %s; rerun with THESAN_TMZ_TRACEBACK=1 to see why"
+                           % output_dir)
+    if todo or cached is None:
+        save_history(hist, cache_path, meta, sigs)
+
+    return _take_rows(hist, np.isin(hist["snapnum"], wanted))
 
 
-def save_history(hist, cache_path, meta):
+def save_history(hist, cache_path, meta, snapsig=None):
     u = hist.get("_units")
     payload = {k: v for k, v in hist.items() if not k.startswith("_")}
     payload["_meta"] = np.asarray(meta)
     payload["_radii_kpc"] = hist["_radii_kpc"]
+    payload["_snapsig"] = np.asarray(json.dumps(snapsig or {}, sort_keys=True))
     if u is not None:
         payload["_unit_pack"] = np.asarray(
-            [u.UnitLength_in_cm, u.UnitMass_in_g, u.UnitVelocity_in_cm_per_s, u.h, u.Omega0, u.OmegaLambda, u.OmegaBaryon, float(u.comoving)]
+            [u.UnitLength_in_cm, u.UnitMass_in_g, u.UnitVelocity_in_cm_per_s, u.h, u.Omega0, u.OmegaLambda, u.OmegaBaryon, float(u.comoving),
+             np.nan if u.eddington_efficiency is None else u.eddington_efficiency]
         )
     os.makedirs(os.path.dirname(os.path.abspath(cache_path)) or ".", exist_ok=True)
     np.savez_compressed(cache_path, **payload)
@@ -220,6 +333,7 @@ def _units_from_cache(z):
         OmegaLambda=p[5],
         OmegaBaryon=p[6],
         ComovingIntegrationOn=bool(p[7]),
+        eddington_efficiency=float(p[8]) if p.size > 8 and np.isfinite(p[8]) else None,
     )
 
 

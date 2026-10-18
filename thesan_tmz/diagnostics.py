@@ -142,7 +142,32 @@ def model_summary(snap):
         "mode_switch": "BH_BIPOLAR_INJECTION_MODE_SWITCH" in cfg,
         "mdot_caveats": mdot_caveats,
         "scenario": _scenario_name(stellar_dep, bh_dep, collimated),
+        "eddington_check": _eddington_check(snap),
     }
+
+
+def _eddington_check(snap):
+    """Does the package's Eddington rate reproduce the code's own BH_MdotEddington?
+
+    ``BH_MdotEddington`` is what blackhole_mdot_eddington() returned for each
+    BH, so agreement means every Eddington ratio in the package uses the same
+    definition as the simulation.  It is evaluated at the BH mass of the BH's
+    last accretion step, before that step's growth, hence the 1% tolerance.
+    Returns None when the snapshot has no BH with both fields.
+    """
+    u = snap.units
+    d = snap.part(io.PT_BH, ["BH_Mass", "BH_MdotEddington"])
+    if not d.get("count") or "BH_Mass" not in d or "BH_MdotEddington" not in d:
+        return None
+    ok = (d["BH_Mass"] > 0) & (d["BH_MdotEddington"] > 0)
+    if not ok.any():
+        return None
+    if u.eddington_efficiency is None:
+        return {"eps": None, "n": int(ok.sum())}
+    ours = u.eddington_rate_msun_per_yr(d["BH_Mass"][ok] * u.mass_to_msun)
+    code = d["BH_MdotEddington"][ok] * u.mdot_to_msun_per_yr
+    return {"eps": u.eddington_efficiency, "n": int(ok.sum()),
+            "max_rel_diff": float(np.max(np.abs(ours / code - 1.0)))}
 
 
 def _scenario_name(stellar_dep, bh_dep, collimated):
@@ -166,6 +191,17 @@ def format_model_summary(summary):
     ]
     for k, v in sorted(summary["params"].items()):
         lines.append("  %-32s %s" % (k, v))
+    ec = summary.get("eddington_check")
+    if ec is not None:
+        if ec["eps"] is None:
+            lines.append("Eddington rate: WARNING efficiency unknown -- every lambda_Edd will be NaN")
+        elif ec["max_rel_diff"] < 0.01:
+            lines.append("Eddington rate: eps = %g reproduces BH_MdotEddington of %d BH(s) (max diff %.2g)"
+                         % (ec["eps"], ec["n"], ec["max_rel_diff"]))
+        else:
+            lines.append("Eddington rate: WARNING eps = %g does NOT reproduce BH_MdotEddington (max diff %.3g) --"
+                         % (ec["eps"], ec["max_rel_diff"]))
+            lines.append("  every lambda_Edd in these figures uses a different definition from the simulation")
     caveats = summary.get("mdot_caveats") or []
     if caveats:
         lines.append("mdot caveat: %s active -- blackhole_details' mdot column is the raw" % "/".join(caveats))
@@ -460,9 +496,8 @@ def plot_accretion_internals(details, units, outpath, params=None, summary=None,
     t = units.age_gyr(details["time"])
     mdot_raw = details["mdot"] * units.mdot_to_msun_per_yr
     mbh = details["bh_mass"] * units.mass_to_msun
-    eps_r = params.get("BlackHoleRadiativeEfficiency", 0.1) if params else 0.1
     edd_factor = float(params.get("BlackHoleEddingtonFactor", 1.0)) if params else 1.0
-    edd = units.eddington_rate_msun_per_yr(np.maximum(mbh, 1e-30), eps_r)
+    edd = units.eddington_rate_msun_per_yr(np.maximum(mbh, 1e-30))  # the run's own efficiency
     with np.errstate(invalid="ignore"):
         mdot = np.where(edd > 0, np.minimum(mdot_raw, edd_factor * edd), mdot_raw)  # Eddington-capped, as the code enforces
     with np.errstate(divide="ignore", invalid="ignore"):
@@ -832,13 +867,12 @@ def check_mode_switch(details, inj, units, params, summary=None):
     if not np.isfinite(thr):
         return "mode-switch check: BHBipolarInjEddThreshold is not among the run's parameters (single-mode build)."
 
-    eps_r = float(params.get("BlackHoleRadiativeEfficiency", 0.1)) if params else 0.1
     edd_factor = float(params.get("BlackHoleEddingtonFactor", 1.0))
     caveats = (summary or {}).get("mdot_caveats") or []
 
     mbh = details["bh_mass"] * units.mass_to_msun
     mdot_raw = details["mdot"] * units.mdot_to_msun_per_yr
-    edd = units.eddington_rate_msun_per_yr(np.maximum(mbh, 1e-30), eps_r)
+    edd = units.eddington_rate_msun_per_yr(np.maximum(mbh, 1e-30))  # the run's own efficiency
     with np.errstate(invalid="ignore"):
         mdot = np.where(edd > 0, np.minimum(mdot_raw, edd_factor * edd), mdot_raw)
     with np.errstate(divide="ignore", invalid="ignore"):

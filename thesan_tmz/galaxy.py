@@ -386,8 +386,7 @@ def measure(snap, centre, radii_kpc=(1.0, 2.0, 5.0, 10.0, 30.0), vel_centre=None
         if "BH_Hsml" in bh and near.any():
             out["bh_hsml_kpc"] = float(np.mean(bh["BH_Hsml"][near]) * L)
         if out.get("bh_mass_msun", 0) > 0 and "bh_mdot_msun_per_yr" in out:
-            edd = u.eddington_rate_msun_per_yr(out["bh_mass_msun"])
-            out["eddington_ratio"] = out["bh_mdot_msun_per_yr"] / edd if edd > 0 else np.nan
+            out["eddington_ratio"] = float(u.eddington_ratio(out["bh_mdot_msun_per_yr"], out["bh_mass_msun"]))
         # BH_CumEgyInjection_QM/RM (snap_io.cc: BCEQ/BCER) are the code's own
         # running totals of thermal/kinetic feedback energy actually coupled to
         # the gas by BH_THERMALFEEDBACK -- unlike energy.txt's e_injected

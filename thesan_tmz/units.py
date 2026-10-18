@@ -66,10 +66,12 @@ GAMMA = 5.0 / 3.0
 GAMMA_MINUS1 = GAMMA - 1.0
 HYDROGEN_MASSFRAC = 0.76
 
-# Eddington accretion rate coefficient, mirroring blackhole.cc:216.
-#   Mdot_Edd = 4 pi G M m_p / (eps_r c sigma_T)
-# The helper below takes the radiative efficiency explicitly because this
-# branch supports BH_VARIABLE_RADIATIVE_EFFICIENCY.
+# Eddington accretion rate, mirroring blackhole_mdot_eddington()
+# (src/blackhole/blackhole_mdot.cc):
+#   Mdot_Edd = 4 pi G M m_p / (eps c sigma_T)
+# where eps is BlackHoleRadiativeEfficiency, except that with
+# BH_VARIABLE_RADIATIVE_EFFICIENCY the code uses the fixed eps = 1/16.
+# Units.eddington_efficiency holds that choice (see from_snapshot_file).
 
 
 class Units:
@@ -95,6 +97,7 @@ class Units:
         OmegaBaryon=0.0486,
         ComovingIntegrationOn=True,
         BoxSize=None,
+        eddington_efficiency=None,
     ):
         self.UnitLength_in_cm = float(UnitLength_in_cm)
         self.UnitMass_in_g = float(UnitMass_in_g)
@@ -105,6 +108,9 @@ class Units:
         self.OmegaBaryon = float(OmegaBaryon)
         self.comoving = bool(ComovingIntegrationOn)
         self.BoxSize = None if BoxSize is None else float(BoxSize)
+        #: The efficiency the code uses in its Eddington rate, or None if unknown.
+        #: Deliberately no default: a wrong one gives a wrong Eddington ratio.
+        self.eddington_efficiency = None if eddington_efficiency is None else float(eddington_efficiency)
 
         # Derived cgs scales (identical to All.Unit* in the code).
         self.UnitTime_in_s = self.UnitLength_in_cm / self.UnitVelocity_in_cm_per_s
@@ -134,6 +140,7 @@ class Units:
         with h5py.File(path, "r") as f:
             hdr = dict(f["Header"].attrs)
             par = dict(f["Parameters"].attrs) if "Parameters" in f else {}
+            cfg = set(f["Config"].attrs.keys()) if "Config" in f else set()
 
         def pick(key, default):
             if key in par:
@@ -152,6 +159,7 @@ class Units:
             OmegaBaryon=pick("OmegaBaryon", 0.0486),
             ComovingIntegrationOn=bool(pick("ComovingIntegrationOn", 1)),
             BoxSize=pick("BoxSize", None),
+            eddington_efficiency=_eddington_efficiency(pick("BlackHoleRadiativeEfficiency", None), cfg),
         )
 
     @classmethod
@@ -187,6 +195,9 @@ class Units:
             OmegaBaryon=num("OmegaBaryon", 0.0486),
             ComovingIntegrationOn=bool(num("ComovingIntegrationOn", 1)),
             BoxSize=num("BoxSize", None) or None,
+            # A parameter file does not say whether BH_VARIABLE_RADIATIVE_EFFICIENCY
+            # was compiled in; prefer from_snapshot_file whenever a snapshot exists.
+            eddington_efficiency=num("BlackHoleRadiativeEfficiency", None),
         )
 
     # -- a/h-independent conversions ---------------------------------------
@@ -283,11 +294,34 @@ class Units:
         kT_keV = BOLTZMANN * T / 1.602176634e-9
         return kT_keV / np.power(np.maximum(ne, 1e-30), 2.0 / 3.0)
 
-    def eddington_rate_msun_per_yr(self, M_bh_msun, radiative_efficiency=0.1):
-        """Mdot_Edd = 4 pi G M m_p / (eps_r c sigma_T), in Msun/yr."""
+    def eddington_rate_msun_per_yr(self, M_bh_msun, radiative_efficiency=None):
+        """Mdot_Edd = 4 pi G M m_p / (eps c sigma_T), in Msun/yr.
+
+        ``eps`` is ``radiative_efficiency`` if given, else the run's
+        :attr:`eddington_efficiency`.  Raises ValueError if neither is known --
+        there is no default, because a default is how the ratio went wrong.
+        """
+        eps = self.eddington_efficiency if radiative_efficiency is None else float(radiative_efficiency)
+        if eps is None or not eps > 0:
+            raise ValueError("Eddington efficiency unknown: build Units from a snapshot with /Parameters "
+                             "(BlackHoleRadiativeEfficiency) or pass radiative_efficiency")
         M = np.asarray(M_bh_msun, dtype=np.float64) * SOLAR_MASS
-        mdot_cgs = 4.0 * np.pi * GRAVITY * M * PROTONMASS / (radiative_efficiency * CLIGHT * THOMPSON)
+        mdot_cgs = 4.0 * np.pi * GRAVITY * M * PROTONMASS / (eps * CLIGHT * THOMPSON)
         return mdot_cgs / SOLAR_MASS * SEC_PER_YEAR
+
+    def eddington_ratio(self, mdot_msun_per_yr, M_bh_msun):
+        """lambda_Edd = Mdot / Mdot_Edd with the run's efficiency.
+
+        NaN where the mass is not positive or the efficiency is unknown, so a
+        missing parameter shows up as a gap in a figure, never as a wrong value.
+        """
+        mdot = np.asarray(mdot_msun_per_yr, dtype=np.float64)
+        M = np.asarray(M_bh_msun, dtype=np.float64)
+        if self.eddington_efficiency is None:
+            return np.full(np.broadcast(mdot, M).shape, np.nan)[()]
+        edd = self.eddington_rate_msun_per_yr(np.where(M > 0, M, np.nan))
+        with np.errstate(invalid="ignore", divide="ignore"):
+            return (mdot / edd)[()]
 
     def eddington_luminosity_erg_per_s(self, M_bh_msun):
         M = np.asarray(M_bh_msun, dtype=np.float64) * SOLAR_MASS
@@ -356,6 +390,15 @@ class Units:
                 self.comoving,
             )
         )
+
+
+def _eddington_efficiency(radiative_efficiency, config):
+    """The efficiency blackhole_mdot_eddington() uses, from a run's Parameters
+    and Config: 1/16 with BH_VARIABLE_RADIATIVE_EFFICIENCY, else
+    BlackHoleRadiativeEfficiency (None if the run does not have it)."""
+    if "BH_VARIABLE_RADIATIVE_EFFICIENCY" in config:
+        return 1.0 / 16.0
+    return None if radiative_efficiency is None else float(radiative_efficiency)
 
 
 #: The THESAN / IllustrisTNG standard unit choice, used as the fallback when

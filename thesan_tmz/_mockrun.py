@@ -60,6 +60,17 @@ SCENARIOS = {
 }
 
 
+#: Radiative efficiency of the synthetic run: 0.2 like the production runs, and
+#: deliberately not 0.1, so an analysis that silently assumes 0.1 fails a check.
+EPS_R = 0.2
+
+
+def _mdot_edd_code(bh_mass_code, h, UL, UV):
+    """BH_MdotEddington as blackhole_mdot_eddington() writes it, in code units."""
+    G, mp, c, sigma_T = 6.6738e-8, 1.67262178e-24, 2.99792458e10, 6.65245873e-25
+    return 4 * np.pi * G * c * mp / (EPS_R * c * c * sigma_T) * bh_mass_code * (UL / UV) / h
+
+
 def build(root, nsnap=12, seed=42, scenario="local_both"):
     """Create a synthetic run under ``root``.  Returns the run directory.
 
@@ -172,7 +183,7 @@ def build(root, nsnap=12, seed=42, scenario="local_both"):
                 BH_Mass=np.array([1.5e-4, 2e-5]) * growth,
                 BH_Mdot=np.array([3e-6, 4e-7]) * growth,
                 BH_MdotBondi=np.array([5e-6, 6e-7]) * growth,
-                BH_MdotEddington=np.array([2e-5, 3e-6]),
+                BH_MdotEddington=_mdot_edd_code(np.array([1.5e-4, 2e-5]) * growth, h, UL, UV),
                 BH_Hsml=np.array([1.2, 1.0]),
                 BH_Density=np.array([0.02, 0.01]),
                 BH_U=np.array([50.0, 40.0]),
@@ -209,7 +220,7 @@ def build(root, nsnap=12, seed=42, scenario="local_both"):
                 for kk, vv in dict(
                     UnitLength_in_cm=UL, UnitMass_in_g=UM, UnitVelocity_in_cm_per_s=UV,
                     HubbleParam=h, Omega0=Om, OmegaLambda=OL, OmegaBaryon=Ob, ComovingIntegrationOn=1, BoxSize=BOX,
-                    BlackHoleRadiativeEfficiency=0.1, BlackHoleFeedbackFactor=0.05, BlackHoleAccretionFactor=1.0,
+                    BlackHoleRadiativeEfficiency=EPS_R, BlackHoleFeedbackFactor=0.05, BlackHoleAccretionFactor=1.0,
                     BlackHoleEddingtonFactor=1.0,
                 ).items():
                     pg.attrs[kk] = vv

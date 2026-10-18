@@ -64,7 +64,13 @@ def run(workdir=None, keep=False, make_figures=True):
     c.check("age(a=1) = 13.80 Gyr", abs(u.age_gyr(1.0) - 13.80) < 0.05, "got %.4f" % u.age_gyr(1.0))
     c.check("age(z=6) = 0.934 Gyr", abs(u.age_gyr(1 / 7.0) - 0.9339) < 0.005, "got %.4f" % u.age_gyr(1 / 7.0))
     c.check("mass_to_msun = 1e10/h", abs(u.mass_to_msun / (1e10 / 0.6774) - 1) < 1e-3)
-    c.check("Mdot_Edd(1e8) = 2.22 Msun/yr", abs(u.eddington_rate_msun_per_yr(1e8) - 2.22) < 0.02)
+    c.check("Mdot_Edd(1e8, eps=0.1) = 2.22 Msun/yr", abs(u.eddington_rate_msun_per_yr(1e8, 0.1) - 2.22) < 0.02)
+    c.check("Mdot_Edd(1e8, eps=0.2) = 1.11 Msun/yr", abs(u.eddington_rate_msun_per_yr(1e8, 0.2) - 1.11) < 0.01)
+    c.check("no Eddington efficiency -> lambda is NaN, not a default",
+            u.eddington_efficiency is None and np.isnan(u.eddington_ratio(1.0, 1e8)))
+    c.check("BH_VARIABLE_RADIATIVE_EFFICIENCY -> eps = 1/16, as blackhole_mdot_eddington()",
+            units._eddington_efficiency(0.2, {"BH_VARIABLE_RADIATIVE_EFFICIENCY"}) == 1.0 / 16.0
+            and units._eddington_efficiency(0.2, set()) == 0.2)
     c.check("Delta_vir(z=0) = 102", abs(u.delta_vir(1.0) - 102.4) < 1.0)
     # age(a) and its inverse must round-trip, since the redshift axis uses both.
     from .plotstyle import _invert_age
@@ -94,6 +100,10 @@ def run(workdir=None, keep=False, make_figures=True):
     c.check("/Config read back", "BH_BIPOLAR_INJECTION" in snap.config)
     c.check("/Parameters read back", abs(snap.parameters["BHBipolarInjEddThreshold"] - 0.01) < 1e-12)
     c.check("units auto-detected from snapshot", abs(snap.units.h - 0.6774) < 1e-9)
+    c.check("Eddington efficiency read from /Parameters (0.2)", snap.units.eddington_efficiency == _mockrun.EPS_R)
+    ec = diagnostics.model_summary(snap)["eddington_check"]
+    c.check("our Eddington rate reproduces the snapshot's BH_MdotEddington",
+            ec is not None and ec["max_rel_diff"] < 1e-6, "got %s" % ec)
     c.check("group catalogue read", snap.groups(["Group_M_Crit200"])["count"] == 3)
     c.check("subhalo catalogue read", snap.subhalos(["SubhaloMassType"])["count"] == 5)
 
@@ -270,6 +280,11 @@ def run(workdir=None, keep=False, make_figures=True):
     c.check("history: stellar mass increases with aperture", np.all(history.key(hist, "mstar", 1.0) <= history.key(hist, "mstar", 30.0)))
     c.check("history: gas phases sum to the total", _phases_sum_ok(hist))
     c.check("history: cache round-trips", _cache_roundtrip_ok(out, hist))
+    lam_expect = hist["bh_mdot_msun_per_yr"] / hist["_units"].eddington_rate_msun_per_yr(hist["bh_mass_msun"], _mockrun.EPS_R)
+    c.check("history: Eddington ratio uses the run's eps (0.2), not 0.1",
+            np.allclose(hist["eddington_ratio"], lam_expect, rtol=1e-10))
+    c.check("history: cached units keep the Eddington efficiency",
+            history.load_history(out, verbose=False)["_units"].eddington_efficiency == _mockrun.EPS_R)
 
     pop = scaling.population_from_catalog(snap)
     c.check("population extracted from Subfind", pop is not None and pop["count"] > 0)
