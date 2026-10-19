@@ -436,6 +436,20 @@ def _check_local_mesh(c, snap):
             iso = np.array([f["wscalar"] for f in f_])
             c.check("%s: kinetic (20 deg) favours the polar faces more than thermal (30 deg) than isotropic" % tag,
                     cosa @ m["coll_kin"] > cosa @ m["coll_therm"] > cosa @ iso)
+    # a BH at the edge of a dense region: the cell must equal the one built from all points
+    rng = np.random.default_rng(3)
+    wrong = 0
+    for _ in range(10):
+        pts = np.vstack([rng.normal(0, 1, (2000, 3)) - [3, 0, 0], rng.uniform(-60, 60, (300, 3))])
+        d_ = pts - np.array([rng.uniform(0, 6), 0, 0])
+        r_ = np.linalg.norm(d_, axis=1)
+        sc = float(np.sort(r_)[15])
+        fa, _ = lm.complete_cell(d_, r_, sc)
+        tr = lm.voronoi_cell(d_, sc)
+        rv = lambda F: max(float(np.max(np.linalg.norm(f["verts"], axis=1))) for f in F)
+        wrong += fa is None or len(fa) != len(tr) or abs(rv(fa) - rv(tr)) > 1e-6 * rv(tr)
+    c.check("local mesh: complete cell at the edge of a dense region (10 random BHs)", wrong == 0,
+            "%d of 10 differ from the cell built from all points" % wrong)
     m1 = next((m for m in meshes if m["id"] == 900001), None)
     ang = (np.degrees(np.arccos(min(1.0, abs(float(m1["axis"] @ _mockrun.TRUE_AXIS)))))
            if m1 is not None and m1["axis"] is not None else 999.0)

@@ -191,6 +191,31 @@ def bh_axis(gas, d_gas, bh_vel, hsml, params, u_to_cgs):
     return (Jt / nJ if np.isfinite(nJ) and nJ > 0 else None), cold_disk
 
 
+def complete_cell(d_all, r_all, scale, max_tries=12):
+    """The Voronoi cell of the origin among the points d_all (|d_all| = r_all), built from
+    as few points as possible but provably complete.  A point farther than twice the cell's
+    farthest vertex cannot cut the cell (its bisector plane lies beyond that vertex), so the
+    search radius is widened until it reaches 2 x the vertex radius.  Closing to 4 pi is NOT
+    a completeness test: any bounded cell does, and one built from too few points is too
+    big (a BH at the edge of a galaxy got a cell several times too large that way).
+    Returns (faces, indices of the candidate points) or (None, None)."""
+    radius = 3.0 * scale
+    for _ in range(max_tries):
+        cand = np.where(r_all < radius)[0]
+        try:
+            faces = voronoi_cell(d_all[cand], scale)
+        except Exception:                                       # unbounded: too few points
+            radius *= 2.0
+            continue
+        r_vert = max(float(np.max(np.linalg.norm(f["verts"], axis=1))) for f in faces)
+        if 2.0 * r_vert <= radius or cand.size == r_all.size:
+            if abs(sum(f["omega"] for f in faces) / (4 * np.pi) - 1.0) > 1e-3:
+                return None, None
+            return faces, cand
+        radius = 2.05 * r_vert
+    return None, None
+
+
 def bh_local_mesh(snap, k, gas=None, params=None):
     """Reconstruct the local cell of BH number ``k`` (index into PartType5).
 
@@ -209,19 +234,10 @@ def bh_local_mesh(snap, k, gas=None, params=None):
     r_all = np.linalg.norm(d_all, axis=1)
     order = np.argsort(r_all)
     scale = float(r_all[order[min(15, order.size - 1)]])        # ~ the 16th nearest cell
-    faces, near, omega_tot = [], None, 0.0
-    for radius in (3.0 * scale, 6.0 * scale, 12.0 * scale):     # widen until the cell closes
-        cand = np.where(r_all < radius)[0]
-        try:
-            trial = voronoi_cell(d_all[cand], scale)
-        except Exception:
-            continue
-        faces, near, omega_tot = trial, cand, sum(f["omega"] for f in trial)
-        if abs(omega_tot / (4 * np.pi) - 1.0) < 1e-6:
-            break
-    if not faces or abs(omega_tot / (4 * np.pi) - 1.0) > 1e-3:
-        raise RuntimeError("the cell of BH %d does not close (solid angle %.4g of 4 pi)"
-                           % (bh["ParticleIDs"][k], omega_tot / (4 * np.pi)))
+    faces, near = complete_cell(d_all, r_all, scale)
+    if faces is None:
+        raise RuntimeError("the cell of BH %d could not be built completely" % bh["ParticleIDs"][k])
+    omega_tot = sum(f["omega"] for f in faces)
     for f in faces:
         g = int(near[f["nb"]])
         f["nb_global"], f["offset"] = g, d_all[g]
@@ -232,8 +248,12 @@ def bh_local_mesh(snap, k, gas=None, params=None):
     axis, cold_disk = bh_axis(gas, io.periodic_delta(gas["Coordinates"], bh["Coordinates"][k], box),
                               bh["Velocities"][k] if "Velocities" in bh else np.zeros(3), hsml, params,
                               snap.units.specific_energy_to_cgs)
+    # the BH's surroundings: nearest gas cell, and the mean density of the 16 nearest
+    n16 = order[:16]
+    rho16 = float(np.sum(gas["Masses"][n16])) / (4.0 / 3.0 * np.pi * scale ** 3) if scale > 0 else np.nan
     out = dict(id=int(bh["ParticleIDs"][k]), src=src, faces=faces, host=int(order[0]), scale=scale,
-               omega_tot=omega_tot, axis=axis, cold_disk=cold_disk, coll_therm=None, coll_kin=None)
+               omega_tot=omega_tot, axis=axis, cold_disk=cold_disk, coll_therm=None, coll_kin=None,
+               r_nearest=float(r_all[order[0]]), rho16=rho16)
     cfg = snap.config
     if "BH_BIPOLAR_INJECTION_THERMAL" in cfg and "BHBipolarInjThermalTheta" in params:
         out["coll_therm"] = collimated_shares(faces, axis, float(params["BHBipolarInjThermalTheta"]))
@@ -365,10 +385,18 @@ def write_page(snap, meshes, path, offline=False):
                 % ("<th>collimated thermal</th>" if m["coll_therm"] is not None else "",
                    "<th>kinetic</th>" if m["coll_kin"] is not None else ""))
         wsum = np.linalg.norm(np.sum([f["w"] for f in m["faces"]], axis=0))
+        L = snap.units.length_to_kpc(snap.a)
+        nH = m["rho16"] * snap.units.density_to_nH_cgs(snap.a)
+        env = ("nearest gas cell %.3g kpc away; mean gas density of the 16 nearest cells n<sub>H</sub> &asymp; "
+               "%.2g cm<sup>-3</sup>" % (m["r_nearest"] * L, nH))
+        if nH < 1e-4:
+            env += ("<br><b>This BH sits in very low-density gas</b> (around the intergalactic or outer-halo "
+                    "density), so its cell is large. It is probably not in the centre of a galaxy: check its "
+                    "offset and host in bh_table.txt / fig 16.")
         parts.append("<h2>BH %d</h2><p>host gas cell %d; |Σ w<sub>j</sub>| = %.2g (0 = no net direction); "
-                     "jet axis %s</p>" % (m["id"], m["host"], wsum,
+                     "jet axis %s<br>%s</p>" % (m["id"], m["host"], wsum,
                                           "[%.3f, %.3f, %.3f]%s" % (tuple(m["axis"]) + (" from the cold disk" if m["cold_disk"] else "",))
-                                          if m["axis"] is not None else "undefined")
+                                          if m["axis"] is not None else "undefined", env)
                      + pio.to_html(_figure(go, snap, m, gas), full_html=False,
                                    include_plotlyjs=((True if offline else "cdn") if n == 0 else False))
                      + "<details><summary>face table</summary><table>%s%s</table></details>" % (head, rows))
@@ -427,10 +455,13 @@ def main(argv=None):
     if not meshes:
         print("  [local_mesh] no black hole cell could be built")
         return None
+    L = snap.units.length_to_kpc(snap.a)
     for m in meshes:
-        print("  BH %d: %d faces, solid angle %.8f x 4pi, max isotropic share %.3f, axis %s"
+        print("  BH %d: %d faces, solid angle %.8f x 4pi, max isotropic share %.3f, axis %s; nearest gas %.3g kpc, "
+              "n_H(16 nearest) %.2g cm^-3"
               % (m["id"], len(m["faces"]), m["omega_tot"] / (4 * np.pi), m["faces"][0]["wscalar"],
-                 None if m["axis"] is None else np.round(m["axis"], 3)))
+                 None if m["axis"] is None else np.round(m["axis"], 3), m["r_nearest"] * L,
+                 m["rho16"] * snap.units.density_to_nH_cgs(snap.a)))
     out = a.html or os.path.join(os.path.dirname(os.path.abspath(a.outdir)), "bh_local_mesh_%03d.html" % snap.num)
     return write_page(snap, meshes, out, offline=a.offline)
 
