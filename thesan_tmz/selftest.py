@@ -336,6 +336,7 @@ def run(workdir=None, keep=False, make_figures=True):
             bt["host_subhalo"][k1] == cat_.target_index() and bt["host_is_central"][k1]
             and np.isclose(bt["offset_kpc"][k1], off_))
     _check_local_mesh(c, s_)
+    _check_slr_mesh(c)
     c.check("history: cache round-trips", _cache_roundtrip_ok(out, hist))
     lam_expect = hist["bh_mdot_msun_per_yr"] / hist["_units"].eddington_rate_msun_per_yr(hist["bh_mass_msun"], _mockrun.EPS_R)
     c.check("history: Eddington ratio uses the run's eps (0.2), not 0.1",
@@ -461,6 +462,47 @@ def _check_local_mesh(c, snap):
     page = lm.local_mesh_page(snap, os.path.join(os.path.dirname(snap.output_dir), "lm_test.html"), max_bhs=1)
     c.check("local mesh: page written for the top BH only (--mesh-bhs 1)",
             page is not None and open(page).read().count("<h2>BH ") == 1)
+
+
+def _check_slr_mesh(c):
+    """SLR_BH refinement diagnostic: the rules mirrored from the C++, without a snapshot."""
+    from . import slr_mesh as sm
+    from .units import GAMMA, GAMMA_MINUS1, Units
+
+    print("\n[SLR mesh]")
+    # R_B at the formula's reference point: 1e7 Msun, c_s = 30 km/s -> 50 pc (kpc/Msun/km/s units, h = 1)
+    u = Units(UnitLength_in_cm=3.085678e21, UnitMass_in_g=1.989e33, UnitVelocity_in_cm_per_s=1e5,
+              HubbleParam=1.0, ComovingIntegrationOn=False)
+    rb = sm.code_bondi_radius(1e7, 30.0 ** 2 / (GAMMA * GAMMA_MINUS1), u)
+    c.check("slr_mesh: R_B = 50 pc at 1e7 Msun and 30 km/s (blackhole_refinement.cc:55-58)",
+            np.isclose(rb, 0.05, rtol=1e-6), "got %g kpc" % rb)
+    s = dict(fixed=True, force=False, radius=1.0, rmin=0.01, rmax=0.1, min_mass=10.0, lower_c=2.0, target_mass=None)
+    R, rmin, rmax = sm.bh_region(s, 0.5, 0.05)
+    c.check("slr_mesh: fixed region and ramp", (R, rmin, rmax) == (1.0, 0.01, 0.1)
+            and np.isclose(sm.target_radius(0.5, R, rmin, rmax), 0.055))
+    s2 = dict(s, fixed=False, radius_hsml=4.0, rmax_hsml=0.1, rmin_rb=0.5)
+    c.check("slr_mesh: r_min = r_max/1e4 when r_min > r_max (:237-241)",
+            sm.bh_region(s2, 1.0, 10.0)[1] == 0.1 / 1e4)
+    # cells: [on target, too big, too big at floor, too small, below floor/4, outside]
+    tg = np.array([0.05, 0.05, 0.05, 0.05, 0.05, np.inf])
+    rc = np.array([0.04, 0.08, 0.08, 0.01, 0.04, 0.3])
+    ms = np.array([100.0, 100.0, 5.0, 100.0, 1.0, 100.0])
+    st = sm.classify(rc, ms, tg, s, target_mass=1000.0)
+    c.check("slr_mesh: refine/derefine classes as criterion_(de)refinement.cc",
+            list(st) == [sm.ON_TARGET, sm.TOO_BIG, sm.AT_FLOOR, sm.TOO_SMALL, sm.BELOW_FLOOR, sm.OUTSIDE],
+            "got %s" % list(st))
+    # the slice is the Voronoi tessellation: every pixel's label is its nearest point
+    try:
+        rng = np.random.default_rng(7)
+        d = rng.uniform(-1, 1, (400, 3))
+        ext, lab, _ = sm.voronoi_slice(d, np.full(400, 0.05), 0.8, n=60)
+        g = np.linspace(-0.8, 0.8, 60)
+        X, Y = np.meshgrid(g, g)
+        q = np.stack([X.ravel(), Y.ravel(), np.zeros(X.size)], axis=1)
+        brute = np.argmin(((q[:, None, :] - d[None, :, :]) ** 2).sum(-1), axis=1).reshape(60, 60)
+        c.check("slr_mesh: slice labels = nearest generating point (the Voronoi cells)", np.array_equal(lab, brute))
+    except ImportError:
+        c.check("slr_mesh: scipy installed (for the slice)", False)
 
 
 def _stack_rows(rows):

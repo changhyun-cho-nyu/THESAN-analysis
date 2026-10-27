@@ -126,6 +126,7 @@ projection maps.
 | `16_bh_population.png` | **every** BH in the last snapshot: mass vs host, Eddington ratio, offsets |
 | `17_bh_tracks.png` | the history of every BH from `blackhole_details` |
 | `18_bh_local_mesh.html` | interactive 3D view of each BH's cell in its local Voronoi mesh (open in a browser) |
+| `19_slr_mesh.png` | runs with `SLR_BH`: how well the mesh is refined around the target galaxy's most massive BH — cell size and mass vs distance against the refinement target, the fraction of cells on target, and slices through the actual Voronoi cells |
 | `bh_table.txt` | one row per BH in the last snapshot |
 | `report.txt` | the run's configuration, checks, and **which figures apply** |
 

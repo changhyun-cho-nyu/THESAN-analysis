@@ -31,6 +31,7 @@ Module map
                 the AGN energy book
 ``bh_population`` every black hole: per-BH table, population and track figures
 ``local_mesh``  each BH's cell in its local Voronoi mesh, rebuilt from the gas; 3D page
+``slr_mesh``    how well SLR_BH refines the mesh around a BH (fig 19)
 ``galaxy``      centring, apertures, gas phases, kinematics, radial profiles
 ``history``     walk the snapshots once, cache the result (or the catalogues only)
 ``obs``         published scaling relations to compare against
@@ -52,6 +53,7 @@ __all__ = [
     "bh_logs",
     "bh_population",
     "local_mesh",
+    "slr_mesh",
     "galaxy",
     "history",
     "obs",

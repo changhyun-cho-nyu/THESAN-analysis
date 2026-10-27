@@ -1089,6 +1089,7 @@ FIGURE_REQUIREMENTS = (
     ("16", "bh_population", "a snapshot with black holes"),
     ("17", "bh_tracks", "blackhole_details"),
     ("18", "bh_local_mesh", "a snapshot with gas and black holes"),
+    ("19", "slr_mesh", "a snapshot of an SLR_BH build with black holes"),
 )
 
 NOT_APPLICABLE = "n/a"
@@ -1150,6 +1151,10 @@ def figure_applicability(summary, logs, produced, has_snapshots=True, has_histor
         elif fid in ("10", "11", "12", "13", "14") and not has_snapshots:
             na = "needs a readable snapshot"
         elif fid in ("16", "18") and not has_snapshots:
+            na = "needs a readable snapshot"
+        elif fid == "19" and not io.has_option(cfg, "SLR_BH"):
+            na = "SLR_BH is not in this build: no refinement region around the BHs to check"
+        elif fid == "19" and not has_snapshots:
             na = "needs a readable snapshot"
         elif fid == "18" and _mesh_missing():
             na = "the 3D page needs %s (pip install %s)" % (" and ".join(_mesh_missing()), " ".join(_mesh_missing()))

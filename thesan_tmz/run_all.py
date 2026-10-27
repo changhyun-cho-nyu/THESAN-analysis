@@ -22,7 +22,7 @@ import traceback
 import numpy as np
 
 from . import arepo_io as io
-from . import bh_logs, bh_population, catalog, diagnostics, evolution, galaxy, history, local_mesh, maps, scaling, tree as tree_mod
+from . import bh_logs, bh_population, catalog, diagnostics, evolution, galaxy, history, local_mesh, maps, scaling, slr_mesh, tree as tree_mod
 from .plotstyle import apply_style
 
 
@@ -222,6 +222,9 @@ def main(argv=None):
     if last_snap is not None and args.mesh_bhs > 0:
         made += _try("bh local mesh", local_mesh.local_mesh_page, last_snap, os.path.join(figdir, "18_bh_local_mesh.html"),
                      max_bhs=args.mesh_bhs)
+    if last_snap is not None and slr_mesh.slr_settings(last_snap) is not None:
+        made += _try("slr mesh", slr_mesh.slr_mesh_figure, last_snap, os.path.join(figdir, "19_slr_mesh.png"),
+                     bh_id=args.bh_id, title=title)
 
     # -- 6. maps and the collimation test -----------------------------------
     if last_snap is not None and not args.no_maps:
