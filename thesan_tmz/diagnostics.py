@@ -1099,7 +1099,7 @@ MISSING = "MISSING"
 
 
 def figure_applicability(summary, logs, produced, has_snapshots=True, has_history=True,
-                         has_catalog=True, skipped=()):
+                         has_catalog=True, skipped=(), all_bh_lowres=False):
     """Classify every figure as produced / not applicable / missing.
 
     The distinction is the point.  A run built without ``BH_BIPOLAR_INJECTION``
@@ -1134,6 +1134,9 @@ def figure_applicability(summary, logs, produced, has_snapshots=True, has_histor
 
         if fid in skipped and not made:
             na = "skipped on request"
+        elif fid in ("16", "17", "18", "19") and all_bh_lowres:
+            na = ("every BH in the last snapshot is in low-res gas and hidden as a zoom-edge artefact "
+                  "(lowres.py); --show-lowres-bhs shows them")
         elif fid == "06" and not counters_possible:
             if not channels:
                 na = ("no BH_BIPOLAR_INJECTION_THERMAL/KINETIC channel in this build; only the cone pass of "

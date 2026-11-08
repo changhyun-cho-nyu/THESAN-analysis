@@ -337,6 +337,7 @@ def run(workdir=None, keep=False, make_figures=True):
             and np.isclose(bt["offset_kpc"][k1], off_))
     _check_local_mesh(c, s_)
     _check_slr_mesh(c)
+    _check_lowres(c, s_, tmp)
     c.check("history: cache round-trips", _cache_roundtrip_ok(out, hist))
     lam_expect = hist["bh_mdot_msun_per_yr"] / hist["_units"].eddington_rate_msun_per_yr(hist["bh_mass_msun"], _mockrun.EPS_R)
     c.check("history: Eddington ratio uses the run's eps (0.2), not 0.1",
@@ -462,6 +463,86 @@ def _check_local_mesh(c, snap):
     page = lm.local_mesh_page(snap, os.path.join(os.path.dirname(snap.output_dir), "lm_test.html"), max_bhs=1)
     c.check("local mesh: page written for the top BH only (--mesh-bhs 1)",
             page is not None and open(page).read().count("<h2>BH ") == 1)
+
+
+def _check_lowres(c, snap, tmp):
+    """Low-res BHs (zoom-edge seeding artefacts) are found and hidden."""
+    import shutil
+
+    import h5py
+
+    from . import bh_logs, bh_population, galaxy, lowres
+    from . import local_mesh as lm
+
+    print("\n[low-res BHs]")
+    # 1. the classifier against brute force, with a BH whose kernel wraps the box edge
+    rng = np.random.default_rng(3)
+    box = 10.0
+    pos = rng.uniform(0, box, (6000, 3))
+    mass = rng.uniform(0.5, 1.5, 6000)
+    lowzone = io.radius_from(pos, np.array([7.0, 7.0, 7.0]), box) < 1.5
+    hr = np.where(lowzone, 0.1, 0.9) * mass
+    bhp = np.array([[0.05, 5.0, 5.0], [7.0, 7.0, 7.0], [3.0, 3.0, 3.0]])
+    hs = np.array([0.8, 1.0, 0.0])                       # the third has no kernel: nearest cell
+    chunks = [(pos[:2500], mass[:2500], hr[:2500]), (pos[2500:], mass[2500:], hr[2500:])]   # two "files"
+    f, n = lowres.highres_fraction(bhp, hs, chunks, box)
+    exp = []
+    for i in range(2):
+        r = io.radius_from(pos, bhp[i], box)
+        exp.append(hr[r <= hs[i]].sum() / mass[r <= hs[i]].sum())
+    j = int(np.argmin(io.radius_from(pos, bhp[2], box)))
+    c.check("lowres: f_hr within BH_Hsml = brute force, across files and the periodic edge",
+            np.allclose(f[:2], exp, rtol=1e-12) and n[0] == np.sum(io.radius_from(pos, bhp[0], box) <= hs[0]),
+            "got %s, expected %s" % (f[:2], exp))
+    c.check("lowres: no cell inside BH_Hsml -> the nearest cell decides", n[2] == 0 and np.isclose(f[2], hr[j] / mass[j]))
+    c.check("lowres: the BH in the low-res zone is low-res, the others are not",
+            list(f < lowres.HIGHRESMASSFAC) == [False, True, False])
+
+    # 2. the mock has no HighResGasMass: nothing can be tested, nothing is hidden
+    lr = lowres.classify(snap)
+    c.check("lowres: no HighResGasMass -> untestable, all BHs kept",
+            not lr["testable"] and not lr["lowres"].any() and bh_population.bh_table(snap)["count"] == 2)
+
+    # 3. the same snapshot with HighResGasMass added: low-res gas around both BHs, then high-res
+    out2 = os.path.join(tmp, "lowres_copy", "output")
+    if os.path.isdir(os.path.dirname(out2)):
+        shutil.rmtree(os.path.dirname(out2))
+    os.makedirs(out2)
+    for nm in ("snapdir_%03d" % snap.num, "groups_%03d" % snap.num):
+        if os.path.isdir(os.path.join(snap.output_dir, nm)):
+            shutil.copytree(os.path.join(snap.output_dir, nm), os.path.join(out2, nm))
+
+    def with_hr(frac):
+        for fn in io.snapshot_files(out2, snap.num):
+            with h5py.File(fn, "r+") as fh:
+                g = fh["PartType0"]
+                if "HighResGasMass" in g:
+                    del g["HighResGasMass"]
+                g.create_dataset("HighResGasMass", data=frac * g["Masses"][:])
+        return io.Snapshot(out2, snap.num)
+
+    s_low = with_hr(0.2)
+    t = bh_population.bh_table(s_low)
+    t_all = bh_population.bh_table(s_low, hide_lowres=False)
+    c.check("lowres: all gas low-res -> both BHs hidden from bh_table, listed in _hidden_ids",
+            t["count"] == 0 and sorted(t["_hidden_ids"]) == [900001, 900002])
+    c.check("lowres: hide_lowres=False keeps them, with highres_frac = 0.2",
+            t_all["count"] == 2 and np.allclose(t_all["highres_frac"], 0.2))
+    if not lm.missing_dependencies():
+        c.check("lowres: the 3D page leaves them out", lm.all_bh_meshes(s_low) == [])
+    cen, info = galaxy.centre_on_bh(s_low, in_target_galaxy=False)
+    c.check("lowres: the centre fallback refuses a low-res BH", cen is None and "low-res" in info.get("reason", ""))
+    cen, info = galaxy.centre_on_bh(s_low)
+    c.check("lowres: the target galaxy's own BH is still the centre", cen is not None and info["bh_id"] == 900001)
+    s_high = with_hr(1.0)
+    c.check("lowres: all gas high-res -> nothing hidden",
+            bh_population.bh_table(s_high)["count"] == 2 and not lowres.lowres_ids(s_high))
+    det = {"id": np.array([1, 2, 1, 3]), "time": np.arange(4.0)}
+    mer = {"id_survivor": np.array([1, 3]), "id_swallowed": np.array([2, 4]), "time": np.array([0.5, 0.7])}
+    c.check("lowres: drop_bhs removes the rows of hidden BHs (details and both merger IDs)",
+            list(bh_logs.drop_bhs(det, {1})["id"]) == [2, 3]
+            and list(bh_logs.drop_bhs(mer, {4}, ("id_survivor", "id_swallowed"))["time"]) == [0.5])
+    shutil.rmtree(os.path.dirname(out2), ignore_errors=True)
 
 
 def _check_slr_mesh(c):

@@ -110,6 +110,18 @@ def centre_on_bh(snap, bh_id=None, cat=None, in_target_galaxy=True):
             pass
 
     if bh_id is None:
+        if "host_subhalo_index" not in host:
+            # No BH inside the target galaxy, so the fallback is the most
+            # massive BH anywhere -- which in a zoom is often one seeded in
+            # low-res gas at the edge of the high-res region (lowres.py).
+            # Centring the galaxy measurements on that would be meaningless.
+            from . import lowres
+
+            low = lowres.lowres_ids(snap)
+            if low:
+                allowed = allowed & ~np.isin(np.asarray(d["ParticleIDs"], dtype=np.int64), list(low))
+                if not allowed.any():
+                    return None, {"reason": "every BH in the snapshot is in low-res gas"}
         k = int(np.argmax(np.where(allowed, mass, -np.inf)))
     else:
         hit = np.where(d["ParticleIDs"] == bh_id)[0]

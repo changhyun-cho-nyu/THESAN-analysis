@@ -262,9 +262,10 @@ def bh_local_mesh(snap, k, gas=None, params=None):
     return out
 
 
-def all_bh_meshes(snap, bh_ids=None, max_bhs=10):
+def all_bh_meshes(snap, bh_ids=None, max_bhs=10, hide_lowres=True):
     """Reconstruct the local cell of the requested BHs (default: the ``max_bhs``
-    most massive).  Returns a list of :func:`bh_local_mesh` dicts; a BH whose
+    most massive, leaving out low-res BHs unless ``hide_lowres`` is False, see
+    :mod:`lowres`).  Returns a list of :func:`bh_local_mesh` dicts; a BH whose
     cell cannot be built is reported and skipped."""
     bh = snap.part(io.PT_BH, ["ParticleIDs", "BH_Mass", "Masses"])
     if not bh.get("count"):
@@ -273,7 +274,17 @@ def all_bh_meshes(snap, bh_ids=None, max_bhs=10):
     if bh_ids:
         ks = [int(np.where(bh["ParticleIDs"] == i)[0][0]) for i in bh_ids if np.any(bh["ParticleIDs"] == i)]
     else:
-        ks = list(np.argsort(-mass)[:max_bhs])
+        from . import lowres
+
+        order = np.argsort(-mass)
+        if hide_lowres:
+            low = lowres.lowres_ids(snap)
+            if low:
+                order = [k for k in order if int(bh["ParticleIDs"][k]) not in low]
+                print("  [local_mesh] %d low-res BH(s) left out" % len(low))
+        ks = list(order[:max_bhs])
+        if not ks:
+            return []
     gas = snap.part(io.PT_GAS, ["Coordinates", "Masses", "Velocities", "InternalEnergy"])
     out = []
     for k in ks:
@@ -422,7 +433,7 @@ def missing_dependencies():
     return [m for m in ("scipy", "plotly") if importlib.util.find_spec(m) is None]
 
 
-def local_mesh_page(snap, path, max_bhs=10, bh_ids=None, offline=False):
+def local_mesh_page(snap, path, max_bhs=10, bh_ids=None, offline=False, hide_lowres=True):
     """Reconstruct the local cell of the ``max_bhs`` most massive BHs (or
     ``bh_ids``) and write the 3D page.  Returns the path, or None when there is
     nothing to show or scipy/plotly are not installed."""
@@ -430,7 +441,7 @@ def local_mesh_page(snap, path, max_bhs=10, bh_ids=None, offline=False):
     if missing:
         print("  [local_mesh] %s not installed -- skipping the 3D page" % " and ".join(missing))
         return None
-    meshes = all_bh_meshes(snap, bh_ids=bh_ids, max_bhs=max_bhs)
+    meshes = all_bh_meshes(snap, bh_ids=bh_ids, max_bhs=max_bhs, hide_lowres=hide_lowres)
     if not meshes:
         print("  [local_mesh] no black hole cell could be built")
         return None
@@ -448,10 +459,11 @@ def main(argv=None):
     ap.add_argument("--max-bhs", type=int, default=10)
     ap.add_argument("--html", default=None)
     ap.add_argument("--offline", action="store_true")
+    ap.add_argument("--show-lowres-bhs", action="store_true", help="also show BHs in low-res gas (see lowres.py)")
     a = ap.parse_args(argv)
     nums = io.available_snapshots(a.outdir)
     snap = io.Snapshot(a.outdir, a.snap if a.snap is not None else nums[-1])
-    meshes = all_bh_meshes(snap, bh_ids=a.bh_id, max_bhs=a.max_bhs)
+    meshes = all_bh_meshes(snap, bh_ids=a.bh_id, max_bhs=a.max_bhs, hide_lowres=not a.show_lowres_bhs)
     if not meshes:
         print("  [local_mesh] no black hole cell could be built")
         return None

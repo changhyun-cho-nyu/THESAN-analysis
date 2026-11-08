@@ -124,9 +124,10 @@ def classify(rcell, mass, target, s, target_mass):
     return st
 
 
-def choose_bh(snap):
+def choose_bh(snap, hide_lowres=True):
     """The most massive BH of the target galaxy (host = the catalogue's target), else
-    the most massive BH in the box.  Returns (index into PartType5, note)."""
+    the most massive BH in the box that is not in low-res gas (see :mod:`lowres`).
+    Returns (index into PartType5, note); index None when there is no candidate."""
     bh = snap.part(io.PT_BH, ["ParticleIDs", "BH_Mass"])
     if not bh.get("count"):
         return None, "no black holes"
@@ -135,14 +136,22 @@ def choose_bh(snap):
 
         cat = catalog.load(snap)
         tgt = cat.target_index()
-        t = bh_population.bh_table(snap, cat)
+        t = bh_population.bh_table(snap, cat, hide_lowres=hide_lowres)
         mine = np.where(np.asarray(t["host_subhalo"]) == tgt)[0]
         if mine.size:
             bid = int(t["id"][mine[np.argmax(np.asarray(t["mass_msun"])[mine])]])
             return int(np.where(bh["ParticleIDs"] == bid)[0][0]), "the most massive BH of the target galaxy"
     except Exception:
         pass
-    return int(np.argmax(bh["BH_Mass"])), "the most massive BH in the box (no catalogue match)"
+    mass = np.asarray(bh["BH_Mass"], dtype=np.float64)
+    if hide_lowres:
+        from . import lowres
+
+        low = lowres.lowres_ids(snap)
+        mass = np.where(np.isin(np.asarray(bh["ParticleIDs"], dtype=np.int64), list(low)), -np.inf, mass)
+        if not np.isfinite(mass).any():
+            return None, "every BH is in low-res gas"
+    return int(np.argmax(mass)), "the most massive BH in the box (no catalogue match)"
 
 
 def analyse(snap, k=None, s=None):
@@ -153,6 +162,8 @@ def analyse(snap, k=None, s=None):
     note = ""
     if k is None:
         k, note = choose_bh(snap)
+        if k is None:
+            raise RuntimeError("no BH to show: %s" % note)
     bh = snap.part(io.PT_BH, ["Coordinates", "ParticleIDs", "BH_Mass", "BH_Hsml", "BH_U"])
     box = snap.boxsize or 0.0
     u = snap.units
@@ -336,7 +347,7 @@ def plot(res, snap, outpath, title=None):
     return savefig(fig, outpath)
 
 
-def slr_mesh_figure(snap, outpath, bh_id=None, title=None):
+def slr_mesh_figure(snap, outpath, bh_id=None, title=None, hide_lowres=True):
     """For run_all: the figure for the target galaxy's most massive BH (or ``bh_id``).
     Returns the path, or None when the run has no SLR_BH or no BH."""
     s = slr_settings(snap)
@@ -349,6 +360,11 @@ def slr_mesh_figure(snap, outpath, bh_id=None, title=None):
         k = int(hit[0]) if hit.size else None
     if k is None and not snap.part(io.PT_BH, ["ParticleIDs"]).get("count"):
         return None
+    if k is None:
+        k0, note = choose_bh(snap, hide_lowres=hide_lowres)
+        if k0 is None:
+            print("  [slr_mesh] %s -- skipping" % note)
+            return None
     return plot(analyse(snap, k, s), snap, outpath, title=title)
 
 

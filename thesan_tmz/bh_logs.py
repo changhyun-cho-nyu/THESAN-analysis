@@ -269,6 +269,24 @@ def select_bh(details, bh_id):
     return {k: (v[m] if isinstance(v, np.ndarray) and v.ndim >= 1 and v.shape[0] == m.size else v) for k, v in details.items()}
 
 
+def drop_bhs(table, ids, id_keys=("id",)):
+    """Rows of a per-BH log without the black holes in ``ids``.  ``id_keys``
+    names the ID columns; a row goes if any of them is in ``ids`` (for the
+    mergers log: ``("id_survivor", "id_swallowed")``)."""
+    if not ids or table is None:
+        return table
+    keys = [k for k in id_keys if k in table and np.size(table[k])]
+    if not keys:
+        return table
+    ids = np.fromiter(ids, dtype=np.int64)
+    drop = np.zeros(np.size(table[keys[0]]), dtype=bool)
+    for k in keys:
+        drop |= np.isin(np.asarray(table[k]).astype(np.int64), ids)
+    keep = ~drop
+    return {k: (v[keep] if isinstance(v, np.ndarray) and v.ndim >= 1 and v.shape[0] == keep.size else v)
+            for k, v in table.items()}
+
+
 def most_massive_bh_id(details):
     """ID of the black hole that reaches the largest ``BH_Mass``."""
     ids = unique_bh_ids(details)

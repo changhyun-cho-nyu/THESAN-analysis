@@ -135,6 +135,16 @@ projection maps.
 applicable* to this build (with the reason), *skipped* on request, or **MISSING**.
 Only MISSING means something went wrong.
 
+**BHs in low-resolution gas are hidden.** In a zoom, a BH can be seeded at the
+edge of the high-res region inside a heavy low-res gas cell and then grow into a
+huge, meaningless object far from the galaxy. A BH counts as low-res when less
+than half of the gas mass within its `BH_Hsml` is high-res (the `HighResGasMass`
+test that star formation uses). Such BHs are left out of figures 02(d), 08 and
+16–19 and of `bh_table.txt`; `report.txt` lists them by ID. Box totals
+(figs 02(a–c), 04, 09) still include them, because those must add up over the
+whole box. Use `--show-lowres-bhs` to see them. Runs without `HighResGasMass` in
+the snapshots keep every BH.
+
 ## Useful options
 
 | option | meaning |
@@ -148,6 +158,7 @@ Only MISSING means something went wrong.
 | `--radii 1,2,5,10,30` | aperture radii in physical kpc |
 | `--extent 20` | half-size of the maps, kpc |
 | `--mesh-bhs 10` | 3D page for this many most massive BHs (`0` skips it) |
+| `--show-lowres-bhs` | keep BHs that sit in low-res gas in the per-BH figures (hidden by default) |
 | `--total-mass` | use the total bound mass of each subhalo instead of the mass within twice the half-mass radius |
 | `--rebuild` | ignore the cache and measure every snapshot again |
 | `--title "Run A"` | text added to every figure title |

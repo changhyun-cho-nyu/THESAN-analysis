@@ -30,6 +30,7 @@ Module map
 ``bh_logs``     parsers for blackholes.txt, blackhole_details, bipolar logs, stdout;
                 the AGN energy book
 ``bh_population`` every black hole: per-BH table, population and track figures
+``lowres``      which BHs sit in low-res gas (zoom-edge seeding artefacts); hidden by default
 ``local_mesh``  each BH's cell in its local Voronoi mesh, rebuilt from the gas; 3D page
 ``slr_mesh``    how well SLR_BH refines the mesh around a BH (fig 19)
 ``galaxy``      centring, apertures, gas phases, kinematics, radial profiles
@@ -52,6 +53,7 @@ __all__ = [
     "tree",
     "bh_logs",
     "bh_population",
+    "lowres",
     "local_mesh",
     "slr_mesh",
     "galaxy",

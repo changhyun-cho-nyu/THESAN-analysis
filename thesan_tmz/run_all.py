@@ -22,7 +22,7 @@ import traceback
 import numpy as np
 
 from . import arepo_io as io
-from . import bh_logs, bh_population, catalog, diagnostics, evolution, galaxy, history, local_mesh, maps, scaling, slr_mesh, tree as tree_mod
+from . import bh_logs, bh_population, catalog, diagnostics, evolution, galaxy, history, local_mesh, lowres, maps, scaling, slr_mesh, tree as tree_mod
 from .plotstyle import apply_style
 
 
@@ -66,6 +66,9 @@ def main(argv=None):
     ap.add_argument("--total-mass", action="store_true",
                     help="use SubhaloMassType (total bound) instead of SubhaloMassInRadType for galaxy masses")
     ap.add_argument("--title", default=None, help="title prefix for every figure")
+    ap.add_argument("--show-lowres-bhs", action="store_true",
+                    help="keep BHs that sit in low-res gas (zoom-edge seeding artefacts, see lowres.py) in the "
+                         "per-BH figures; by default they are hidden from figs 02(d), 08, 16-19 and bh_table.txt")
     args = ap.parse_args(argv)
 
     run_dir, out_dir = resolve_dirs(args.run)
@@ -118,6 +121,30 @@ def main(argv=None):
         print("  units from %s" % (pf or "THESAN defaults"))
     print("  %s" % units)
 
+    # -- 1b. low-res BHs: zoom-edge seeding artefacts, hidden by default ----
+    #
+    # Identified in the last snapshot (lowres.py).  Per-BH figures and the
+    # details log drop them; box totals and the energy/mass books keep
+    # everything, because those must close over the whole box.
+    hide_lowres = not args.show_lowres_bhs
+    hidden_ids, all_bh_lowres = set(), False
+    if last_snap is not None:
+        try:
+            lr = lowres.classify(last_snap)
+            print("  low-res BHs: %s" % lr["note"])
+            hidden_ids = lowres.lowres_ids(last_snap) if hide_lowres else set()
+            all_bh_lowres = hide_lowres and bool(lr["lowres"].size) and bool(lr["lowres"].all())
+            if lr["testable"] and lr["lowres"].any():
+                reports.append(lowres.report_lines(last_snap, units, hidden=hide_lowres))
+        except Exception as exc:
+            print("  [run_all] low-res BH check failed (nothing hidden): %s" % exc)
+    logs_shown = dict(logs)
+    if hidden_ids:
+        logs_shown["details"] = bh_logs.drop_bhs(logs["details"], hidden_ids)
+        logs_shown["mergers"] = bh_logs.drop_bhs(logs["mergers"], hidden_ids, ("id_survivor", "id_swallowed"))
+        print("  hiding %d low-res BH(s) from the per-BH figures: %s"
+              % (len(hidden_ids), " ".join(map(str, sorted(hidden_ids)))))
+
     # -- 2a. catalogue history (cheap) and merger tree ----------------------
     #
     # Galaxy-scale numbers come from Subfind; the snapshot particles are read
@@ -161,7 +188,8 @@ def main(argv=None):
     if hist is not None:
         made += _try("overview", evolution.plot_overview, hist, units, os.path.join(figdir, "01_overview.png"), title=title, logs=logs)
         made += _try("sfh", evolution.plot_sfh, logs, hist, units, os.path.join(figdir, "03_star_formation.png"), title=title)
-    made += _try("bh growth", evolution.plot_bh_growth, logs, units, os.path.join(figdir, "02_bh_growth.png"), title=title)
+    made += _try("bh growth", evolution.plot_bh_growth, logs_shown, units, os.path.join(figdir, "02_bh_growth.png"), title=title,
+                 hidden=len(hidden_ids))
     made += _try("energy", evolution.plot_energy_budget, logs, units, os.path.join(figdir, "04_energy.png"), hist=hist, params=params,
                  title=title, summary=summary)
 
@@ -197,7 +225,7 @@ def main(argv=None):
     made += _try(
         "accretion internals",
         diagnostics.plot_accretion_internals,
-        logs["details"],
+        logs_shown["details"],
         units,
         os.path.join(figdir, "08_accretion_internals.png"),
         params=params,
@@ -212,19 +240,19 @@ def main(argv=None):
     # -- 5b. every black hole, not just the target galaxy's ------------------
     print("\n--- all black holes ---")
     if last_snap is not None:
-        bht = _try_value(bh_population.bh_table, last_snap)
+        bht = _try_value(bh_population.bh_table, last_snap, hide_lowres=hide_lowres)
         if bht is not None:
             _try_value(bh_population.write_bh_table, os.path.join(figdir, "bh_table.txt"), bht, last_snap)
             made += _try("bh population", bh_population.plot_population, bht, os.path.join(figdir, "16_bh_population.png"),
                          snap=last_snap, title=title)
-    made += _try("bh tracks", bh_population.plot_tracks, logs["details"], logs["mergers"], units,
-                 os.path.join(figdir, "17_bh_tracks.png"), params=params, title=title)
+    made += _try("bh tracks", bh_population.plot_tracks, logs_shown["details"], logs_shown["mergers"], units,
+                 os.path.join(figdir, "17_bh_tracks.png"), params=params, title=title, hidden=len(hidden_ids))
     if last_snap is not None and args.mesh_bhs > 0:
         made += _try("bh local mesh", local_mesh.local_mesh_page, last_snap, os.path.join(figdir, "18_bh_local_mesh.html"),
-                     max_bhs=args.mesh_bhs)
+                     max_bhs=args.mesh_bhs, hide_lowres=hide_lowres)
     if last_snap is not None and slr_mesh.slr_settings(last_snap) is not None:
         made += _try("slr mesh", slr_mesh.slr_mesh_figure, last_snap, os.path.join(figdir, "19_slr_mesh.png"),
-                     bh_id=args.bh_id, title=title)
+                     bh_id=args.bh_id, title=title, hide_lowres=hide_lowres)
 
     # -- 6. maps and the collimation test -----------------------------------
     if last_snap is not None and not args.no_maps:
@@ -280,7 +308,7 @@ def main(argv=None):
     rows = diagnostics.figure_applicability(
         summary, logs, made,
         has_snapshots=bool(snaps), has_history=hist is not None, has_catalog=chist is not None,
-        skipped=skipped,
+        skipped=skipped, all_bh_lowres=all_bh_lowres,
     )
     # write_report echoes to stdout, so appending is enough -- printing here as
     # well would show the block twice.

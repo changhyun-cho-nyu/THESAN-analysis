@@ -234,8 +234,12 @@ def collect_logs(output_dir, stdout_path=None, run_dir=None):
     return out
 
 
-def plot_bh_growth(logs, units, outpath, title=None):
-    """Four-panel BH growth history straight from the logs (full cadence)."""
+def plot_bh_growth(logs, units, outpath, title=None, hidden=0):
+    """Four-panel BH growth history straight from the logs (full cadence).
+
+    ``hidden``: number of low-res BHs already removed from ``logs['details']``
+    (see :mod:`lowres`).  Panels (a)-(c) come from blackholes.txt, a box total
+    that cannot be split by BH, so they still include them and say so."""
     b = logs["blackholes"]
     d = logs["details"]
     if b["time"].size == 0:
@@ -251,7 +255,7 @@ def plot_bh_growth(logs, units, outpath, title=None):
     a.set_yscale("log")
     a.set_ylabel(r"$M_{\rm BH}$ [M$_\odot$]")
     a.legend(loc="lower right")
-    label_panel(a, "(a) total BH mass")
+    label_panel(a, "(a) total BH mass" + (" (whole box, incl. %d low-res)" % hidden if hidden else ""))
 
     a = ax[0, 1]
     a.plot(t, b["mdot_msun_per_yr"], color=C["bh"], lw=0.8)
@@ -280,7 +284,8 @@ def plot_bh_growth(logs, units, outpath, title=None):
             a.plot(units.age_gyr(s["time"]), s["bh_mass"] * units.mass_to_msun, lw=0.9, alpha=0.85)
         a.set_yscale("log")
         a.set_ylabel(r"$M_{\rm BH}$ [M$_\odot$]")
-        label_panel(a, "(d) individual BH tracks (10 most massive)")
+        label_panel(a, "(d) individual BH tracks (10 most massive)"
+                    + ("\n%d low-res BH%s hidden" % (hidden, "s" if hidden > 1 else "") if hidden else ""))
     a.set_xlabel("age of universe [Gyr]")
 
     add_redshift_axis(ax[0, 0], units)

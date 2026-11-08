@@ -19,6 +19,11 @@ Host galaxy: the subhalo whose centre is nearest in units of its own
 :func:`galaxy.target_bh_radius_kpc` (five stellar half-mass radii, else
 max(5 kpc, 0.1 R200c)), provided the BH is within that radius; -1 otherwise
 ("unhosted": wandering, ejected, or in a galaxy too small for Subfind).
+
+Low-res BHs -- seeded in, or wandered into, low-resolution gas at the edge of
+a zoom (see :mod:`lowres`) -- are numerical artefacts.  :func:`bh_table`
+leaves them out by default and lists them in ``'_hidden_ids'``; the figures
+and bh_table.txt say how many were hidden.
 """
 
 from __future__ import annotations
@@ -28,13 +33,14 @@ import numpy as np
 from . import arepo_io as io
 from . import bh_logs
 from . import catalog as cat_mod
+from . import lowres
 from .plotstyle import CYCLE, PALETTE, label_panel, plt, savefig
 from .units import GAMMA, GAMMA_MINUS1
 
 #: Columns of :func:`bh_table`, in the order :func:`write_bh_table` writes them.
 TABLE_COLS = [
     "id", "mass_msun", "mdot_msun_per_yr", "eddington_ratio", "nH_cgs", "csnd_kms", "hsml_kpc",
-    "host_subhalo", "host_is_central", "host_mstar_msun", "offset_kpc", "cum_egy_erg",
+    "host_subhalo", "host_is_central", "host_mstar_msun", "offset_kpc", "cum_egy_erg", "highres_frac",
 ]
 
 
@@ -52,9 +58,14 @@ def _subhalo_radii_kpc(cat):
     return np.where(rhalf > 0, 5.0 * rhalf, np.maximum(5.0, 0.1 * r200))
 
 
-def bh_table(snap, cat=None):
+def bh_table(snap, cat=None, hide_lowres=True):
     """One row per black hole in ``snap``.  Returns a dict of arrays (TABLE_COLS)
-    plus ``'count'``; physical units throughout."""
+    plus ``'count'``; physical units throughout.
+
+    ``highres_frac`` is the high-res mass fraction of the gas within BH_Hsml
+    (NaN when the snapshot cannot tell, see :mod:`lowres`).  With
+    ``hide_lowres`` the BHs below 0.5 are dropped; their IDs are in
+    ``'_hidden_ids'`` either way."""
     u, a = snap.units, snap.a
     L, M = u.length_to_kpc(a), u.mass_to_msun
     d = snap.part(io.PT_BH, ["Coordinates", "ParticleIDs", "BH_Mass", "Masses", "BH_Mdot", "BH_MdotEddington",
@@ -110,7 +121,24 @@ def bh_table(snap, cat=None):
                 t["offset_kpc"][i] = float(r[j])
                 if mt is not None:
                     t["host_mstar_msun"][i] = float(np.asarray(mt)[j, io.PT_STAR] * M)
+
+    # -- low-res BHs ----------------------------------------------------------
+    lr = lowres.classify(snap)
+    t["highres_frac"] = np.asarray(lr["highres_frac"], dtype=np.float64)
+    low = np.asarray(lr["lowres"], dtype=bool)
+    t["_hidden_ids"] = [int(x) for x in t["id"][low]] if hide_lowres else []
+    t["_lowres_ids"] = [int(x) for x in t["id"][low]]
+    if hide_lowres and low.any():
+        t = _rows(t, ~low)
     return t
+
+
+def _rows(t, keep):
+    """The table restricted to the rows in ``keep``."""
+    out = {k: (v[keep] if isinstance(v, np.ndarray) and v.ndim >= 1 and v.shape[0] == keep.size else v)
+           for k, v in t.items()}
+    out["count"] = int(keep.sum())
+    return out
 
 
 def write_bh_table(path, table, snap=None):
@@ -119,13 +147,17 @@ def write_bh_table(path, table, snap=None):
         if snap is not None:
             fh.write("# black holes in %s (z = %.4g); lambda_Edd from %s\n"
                      % (snap, snap.z, table.get("_eddington_source", "?")))
+        if table.get("_hidden_ids"):
+            fh.write("# %d low-res BH(s) not listed (high-res gas fraction within BH_Hsml < %.1f): %s\n"
+                     % (len(table["_hidden_ids"]), lowres.HIGHRESMASSFAC, " ".join(map(str, table["_hidden_ids"]))))
         fh.write("# %s\n" % "  ".join(TABLE_COLS))
         if not table.get("count"):
             return path
         for i in np.argsort(-table["mass_msun"]):
-            fh.write("%d  %.5g  %.5g  %.4g  %.4g  %.4g  %.4g  %d  %d  %.5g  %.4g  %.4g\n" % tuple(
+            fh.write("%d  %.5g  %.5g  %.4g  %.4g  %.4g  %.4g  %d  %d  %.5g  %.4g  %.4g  %.3f\n" % tuple(
                 table[k][i] for k in TABLE_COLS))
-    print("  [bh_population] wrote %s (%d black holes)" % (path, table["count"]))
+    print("  [bh_population] wrote %s (%d black holes%s)" % (
+        path, table["count"], ", %d low-res hidden" % len(table["_hidden_ids"]) if table.get("_hidden_ids") else ""))
     return path
 
 
@@ -185,16 +217,19 @@ def plot_population(table, outpath, snap=None, title=None):
     a.set_ylabel(r"$\dot M$ [M$_\odot$ yr$^{-1}$]")
     label_panel(a, "(d) accretion vs environment", loc="lower right")
 
-    ttl = "%d black holes" % table["count"] + ("  (%s, z = %.2f)" % (snap.files[0].split("/")[-1], snap.z) if snap else "")
+    nh = len(table.get("_hidden_ids", []))
+    ttl = "%d black holes" % table["count"] + ("; %d low-res hidden" % nh if nh else "") \
+        + ("  (%s, z = %.2f)" % (snap.files[0].split("/")[-1], snap.z) if snap else "")
     fig.suptitle("%s  %s" % (title or "", ttl), y=0.995)
     fig.tight_layout()
     return savefig(fig, outpath)
 
 
-def plot_tracks(details, mergers, units, outpath, params=None, max_bhs=20, nbins=120, title=None):
+def plot_tracks(details, mergers, units, outpath, params=None, max_bhs=20, nbins=120, title=None, hidden=0):
     """Fig 17: the history of every BH (up to ``max_bhs``, most massive first)
     from ``blackhole_details``, dt-weighted onto a common time grid, with the
-    mergers from ``blackhole_mergers`` marked."""
+    mergers from ``blackhole_mergers`` marked.  ``hidden``: how many low-res
+    BHs the caller already removed from ``details`` and ``mergers``."""
     if details["time"].size == 0:
         print("  [bh_population] blackhole_details empty -- skipping the BH tracks")
         return None
@@ -237,8 +272,9 @@ def plot_tracks(details, mergers, units, outpath, params=None, max_bhs=20, nbins
     for a in ax[2:]:
         a.set_xlabel("age of universe [Gyr]")
     ax[0].legend(fontsize=6, ncol=2, loc="lower right", title="BH ID", title_fontsize=6)
-    ttl = "%d black holes in blackhole_details%s; grey lines = mergers" % (
-        ids.size, (", the %d most massive shown" % len(shown)) if ids.size > len(shown) else "")
+    ttl = "%d black holes in blackhole_details%s%s; grey lines = mergers" % (
+        ids.size, (", the %d most massive shown" % len(shown)) if ids.size > len(shown) else "",
+        ("; %d low-res hidden" % hidden) if hidden else "")
     fig.suptitle("%s  %s" % (title or "", ttl), y=0.995)
     fig.tight_layout()
     return savefig(fig, outpath)
