@@ -51,7 +51,7 @@ pip install -r requirements.txt
 | package | needed for |
 |---|---|
 | `numpy`, `h5py`, `matplotlib` | everything (required) |
-| `scipy` | smoother projection maps; the 3D local-mesh page |
+| `scipy` | smooth projection maps (each cell spread over its own size); the 3D local-mesh page |
 | `plotly` | the 3D local-mesh page (`18_bh_local_mesh.html`) |
 
 Python 3.8 or newer. On a cluster, `module load python scipy-stack` usually provides
@@ -112,14 +112,14 @@ projection maps.
 | `02_bh_growth.png` | total BH mass and accretion rate, BH count and mergers, the most massive BHs |
 | `03_star_formation.png` | star formation history and stellar growth |
 | `04_energy.png` | energy budget of the box; AGN energy released and deposited, per channel, against the expected value |
-| `05_scaling_*.png` | the galaxy against published relations (M★–M_halo, M_BH–M★, main sequence, MZR, M_BH–σ, …) |
+| `05_scaling_*.png` | the galaxy against published relations (M★–M_halo, M_BH–M★, main sequence, MZR, M_BH–σ, …); the M★–M_halo population panel uses the FoF group mass and marks the target galaxy |
 | `06_injection_counters.png` | per-step injected energy of the collimated feedback (needs `--stdout`) |
 | `07_axis_stability.png` | how much the jet axis wanders (runs with `BH_BIPOLAR_FEEDBACK`) |
-| `08_accretion_internals.png` | accretion-model internals: raw vs capped rate, Eddington ratio, BH environment |
+| `08_accretion_internals.png` | accretion-model internals: raw vs capped rate, Eddington ratio (pre-cap demand and actual, up to 100× Eddington), BH environment |
 | `09_conservation.png` | BH mass and AGN energy bookkeeping |
 | `10_phase_diagram.png` | density–temperature diagram |
-| `11_radial_profiles.png` | density, temperature, radial velocity, circular velocity |
-| `12_projections.png` | gas maps face-on and edge-on in the jet frame |
+| `11_radial_profiles.png` | density, temperature, radial velocity, and the rotation curve (linear, 0–50 kpc, unresolved centre shaded) |
+| `12_projections.png` | gas maps face-on and edge-on in the **jet frame** (the BH's axis), for the outflow check |
 | `13_collimation.png` | outflow speed, temperature and mass vs angle from the jet axis: **the test of collimated feedback** |
 | `14_stellar_ages.png` | star formation history from stellar ages |
 | `15_catalog_evolution.png` | the galaxy as Subfind sees it, with the merger tree |
@@ -127,6 +127,7 @@ projection maps.
 | `17_bh_tracks.png` | the history of every BH from `blackhole_details` |
 | `18_bh_local_mesh.html` | interactive 3D view of each BH's cell in its local Voronoi mesh (open in a browser) |
 | `19_slr_mesh.png` | runs with `SLR_BH`: how well the mesh is refined around the target galaxy's most massive BH — cell size and mass vs distance against the refinement target, the fraction of cells on target, and slices through the actual Voronoi cells |
+| `20_galaxy_view.png` | the galaxy **face-on and edge-on** in its own spin frame, stars and gas, 40 kpc across (`--extent`) |
 | `bh_table.txt` | one row per BH in the last snapshot |
 | `report.txt` | the run's configuration, checks, and **which figures apply** |
 
@@ -152,7 +153,7 @@ the snapshots keep every BH.
 | `--figdir DIR` | where to write the figures |
 | `--snapshots 0-40` or `0,10,20` | only these snapshots |
 | `--catalog-only` | use the group catalogues only (fast; no apertures, gas phases or kinematics) |
-| `--no-maps` | skip the projection figures (10–14), which are slow |
+| `--no-maps` | skip the projection figures (10–14, 20), which are slow |
 | `--stdout run.out` | the run's stdout file(s), comma-separated for restarts; enables fig 06 and the energy ledger |
 | `--bh-id ID` | follow this BH instead of the default one |
 | `--radii 1,2,5,10,30` | aperture radii in physical kpc |

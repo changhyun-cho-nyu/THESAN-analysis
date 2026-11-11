@@ -339,6 +339,7 @@ def run(workdir=None, keep=False, make_figures=True):
     _check_slr_mesh(c)
     _check_lowres(c, s_, tmp)
     _check_eddington_cap(c, s_.units)
+    _check_maps(c, s_)
     c.check("history: cache round-trips", _cache_roundtrip_ok(out, hist))
     lam_expect = hist["bh_mdot_msun_per_yr"] / hist["_units"].eddington_rate_msun_per_yr(hist["bh_mass_msun"], _mockrun.EPS_R)
     c.check("history: Eddington ratio uses the run's eps (0.2), not 0.1",
@@ -571,6 +572,44 @@ def _check_eddington_cap(c, units):
     c.check("mode-switch check: lambda >= 2 never happens with the cap, does without it",
             "predicted thermal fraction    : 0.000" in r_cap and "predicted thermal fraction    : 0.000" not in r_free
             and "no Eddington cap" in r_free)
+
+
+def _check_maps(c, snap):
+    """Adaptive projection, galaxy spin axis, softening."""
+    from . import galaxy, maps
+
+    print("\n[maps]")
+    if not maps._HAVE_SCIPY:
+        c.check("maps: scipy installed (adaptive projection)", False)
+        return
+    rng = np.random.default_rng(5)
+    pos = rng.uniform(-5, 5, (3000, 3))
+    w = rng.uniform(0.5, 1.5, 3000)
+    sig = rng.uniform(0.01, 0.8, 3000)
+    img, ext = maps.project_adaptive(pos, w, sig, 20.0, npix=200)
+    px = 40.0 / 200
+    c.check("maps: adaptive projection conserves mass (elements well inside the frame)",
+            np.isclose(img.sum() * px ** 2, w.sum(), rtol=1e-6), "%g vs %g" % (img.sum() * px ** 2, w.sum()))
+    one, _ = maps.project_adaptive(np.zeros((1, 3)), [1.0], [2.0], 20.0, npix=200)
+    yy, xx = np.mgrid[0:200, 0:200]
+    r2 = ((xx - 99.5) ** 2 + (yy - 99.5) ** 2) * px ** 2
+    sd = np.sqrt(np.sum(one * r2) / np.sum(one) / 2.0)
+    c.check("maps: one element is spread as a Gaussian of about its own width (2 kpc)", 1.6 < sd < 2.5, "sigma %.2f" % sd)
+    vals, _ = maps.project_adaptive(pos, w, sig, 20.0, npix=200, values=np.full(3000, 7.0))
+    c.check("maps: a constant field stays constant in the weighted mean", np.allclose(vals[np.isfinite(vals)], 7.0))
+    cen, _ = galaxy.auto_centre(snap)
+    ax_, info = maps.galaxy_axis(snap, cen)
+    ang = np.degrees(np.arccos(min(1.0, abs(float(ax_ @ _mockrun.TRUE_AXIS))))) if ax_ is not None else 180.0
+    c.check("maps: galaxy spin = the mock disc axis (stars do not rotate, so from the cold gas)",
+            ang < 3.0 and info["from"] == "cold gas", "%.2f deg from %s" % (ang, info["from"]))
+    snap.parameters.update(SofteningTypeOfPartType1=1, SofteningTypeOfPartType4=2, SofteningComovingType1=1.0,
+                           SofteningMaxPhysType1=0.5, SofteningComovingType2=0.5, SofteningMaxPhysType2=0.1)
+    e = maps.softening_kpc(snap)
+    exp_ = max(min(1.0 * snap.a, 0.5), min(0.5 * snap.a, 0.1)) * snap.units.length_to_kpc(1.0)
+    c.check("maps: softening = max over DM/stars of min(comoving x a, max physical)", np.isclose(e, exp_))
+    for k in ("SofteningTypeOfPartType1", "SofteningTypeOfPartType4", "SofteningComovingType1", "SofteningMaxPhysType1",
+              "SofteningComovingType2", "SofteningMaxPhysType2"):
+        snap.parameters.pop(k, None)
 
 
 def _check_slr_mesh(c):
