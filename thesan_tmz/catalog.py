@@ -443,6 +443,7 @@ class Catalog:
 
         cen = self.is_central()
         p["central"] = cen
+        p["subhalo_index"] = np.arange(n)
 
         # -- host halo per subhalo, via SubhaloGroupNr ----------------------
         gn = self.group_of()
@@ -457,7 +458,12 @@ class Catalog:
             # A satellite's "halo mass" is its host's, which is not the SMHM
             # x-axis; mask it so a caller cannot plot it by accident.
             p["m200c_central"] = np.where(cen, p["m200c"], np.nan)
-        elif gn is None:
+        if gn is not None and self.n_grp:
+            gmass = self.g("mass")   # GroupMass: the FoF group's total mass
+            if gmass is not None:
+                p["mgroup"] = np.asarray(gmass, dtype=np.float64)[np.clip(gn, 0, self.n_grp - 1)] * M
+                p["mgroup_central"] = np.where(cen, p["mgroup"], np.nan)
+        if gn is None:
             p["grnr"] = None
 
         # -- cuts -----------------------------------------------------------

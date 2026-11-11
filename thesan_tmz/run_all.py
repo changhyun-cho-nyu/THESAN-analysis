@@ -246,7 +246,8 @@ def main(argv=None):
             made += _try("bh population", bh_population.plot_population, bht, os.path.join(figdir, "16_bh_population.png"),
                          snap=last_snap, title=title)
     made += _try("bh tracks", bh_population.plot_tracks, logs_shown["details"], logs_shown["mergers"], units,
-                 os.path.join(figdir, "17_bh_tracks.png"), params=params, title=title, hidden=len(hidden_ids))
+                 os.path.join(figdir, "17_bh_tracks.png"), params=params, title=title, hidden=len(hidden_ids),
+                 summary=summary)
     if last_snap is not None and args.mesh_bhs > 0:
         made += _try("bh local mesh", local_mesh.local_mesh_page, last_snap, os.path.join(figdir, "18_bh_local_mesh.html"),
                      max_bhs=args.mesh_bhs, hide_lowres=hide_lowres)
@@ -275,6 +276,8 @@ def main(argv=None):
                 axis=axis,
                 title=title,
             )
+            made += _try("galaxy view", maps.plot_galaxy_view, last_snap, centre, os.path.join(figdir, "20_galaxy_view.png"),
+                         extent_kpc=args.extent, title=title)
             made += _try(
                 "collimation",
                 diagnostics.plot_collimation,
@@ -300,7 +303,7 @@ def main(argv=None):
     made = [m for m in made if m]
     skipped = set()
     if args.no_maps:
-        skipped |= {"10", "11", "12", "13", "14"}
+        skipped |= {"10", "11", "12", "13", "14", "20"}
     if args.catalog_only:
         skipped |= {"01", "03"}
     if args.mesh_bhs <= 0:

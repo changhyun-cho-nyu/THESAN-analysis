@@ -225,11 +225,18 @@ def plot_population(table, outpath, snap=None, title=None):
     return savefig(fig, outpath)
 
 
-def plot_tracks(details, mergers, units, outpath, params=None, max_bhs=20, nbins=120, title=None, hidden=0):
+def plot_tracks(details, mergers, units, outpath, params=None, max_bhs=20, nbins=120, title=None, hidden=0, summary=None):
     """Fig 17: the history of every BH (up to ``max_bhs``, most massive first)
     from ``blackhole_details``, dt-weighted onto a common time grid, with the
     mergers from ``blackhole_mergers`` marked.  ``hidden``: how many low-res
-    BHs the caller already removed from ``details`` and ``mergers``."""
+    BHs the caller already removed from ``details`` and ``mergers``.
+
+    The details log holds the rate *before* the Eddington cap, so panels (b)
+    and (c) draw the rate the BH actually got (capped as the build caps, see
+    :func:`diagnostics._enforced_mdot`; needs ``summary`` for the Config) as
+    solid lines and the pre-cap demand faint behind it."""
+    from .diagnostics import _enforced_mdot
+
     if details["time"].size == 0:
         print("  [bh_population] blackhole_details empty -- skipping the BH tracks")
         return None
@@ -240,30 +247,42 @@ def plot_tracks(details, mergers, units, outpath, params=None, max_bhs=20, nbins
     t_all = details["time"]
     bins = np.linspace(t_all.min(), t_all.max(), nbins + 1)
 
-    fields = ["bh_mass", "mdot", "rho"]
+    fields = ["bh_mass", "mdot", "mdot_used", "rho"]
+    capped = False
     fig, ax = plt.subplots(2, 2, figsize=(11.0, 7.6), sharex=True)
     ax = ax.ravel()
     for k, i in enumerate(shown):
         s = bh_logs.select_bh(details, i)
+        raw_msun = s["mdot"] * units.mdot_to_msun_per_yr
+        used, capped, cap_note = _enforced_mdot(raw_msun, s["bh_mass"] * units.mass_to_msun, units, params, summary)
+        s["mdot_used"] = used / units.mdot_to_msun_per_yr
         b = bh_logs.bin_details_by_time(s, bins, fields=fields)
         ok = b["count"] > 0
         tg = units.age_gyr(b["time"][ok])
         col = CYCLE[k % len(CYCLE)]
         ls = "-" if k < len(CYCLE) else "--"
         m = b["bh_mass"][ok] * units.mass_to_msun
-        md = b["mdot"][ok] * units.mdot_to_msun_per_yr
+        md = b["mdot_used"][ok] * units.mdot_to_msun_per_yr
         ax[0].plot(tg, m, color=col, ls=ls, lw=1.0, label=str(i))
         ax[1].plot(tg, np.where(md > 0, md, np.nan), color=col, ls=ls, lw=0.9)
         lam = units.eddington_ratio(md, m)
         ax[2].plot(tg, np.where(lam > 0, lam, np.nan), color=col, ls=ls, lw=0.9)
+        if capped:
+            mr = b["mdot"][ok] * units.mdot_to_msun_per_yr
+            ax[1].plot(tg, np.where(mr > 0, mr, np.nan), color=col, ls=ls, lw=0.6, alpha=0.25)
+            lr = units.eddington_ratio(mr, m)
+            ax[2].plot(tg, np.where(lr > 0, lr, np.nan), color=col, ls=ls, lw=0.6, alpha=0.25)
         ax[3].plot(tg, b["rho"][ok] * units.density_to_nH_cgs(1.0), color=col, ls=ls, lw=0.9)   # details rho is physical
     if mergers is not None and np.size(mergers.get("time", [])):
         for tm in units.age_gyr(mergers["time"]):
             for a in ax:
                 a.axvline(tm, color=PALETTE["grey"], lw=0.6, alpha=0.6)
     for a, lab, yl in ((ax[0], "(a) BH mass", r"$M_{\rm BH}$ [M$_\odot$]"),
-                       (ax[1], "(b) accretion rate (pre-cap log value)", r"$\dot M$ [M$_\odot$ yr$^{-1}$]"),
-                       (ax[2], r"(c) Eddington ratio", r"$\lambda_{\rm Edd}$"),
+                       (ax[1], "(b) accretion rate" + ("\nsolid: actual (capped); faint: pre-cap demand" if capped
+                                                       else "\n(no Eddington cap in this build)"),
+                        r"$\dot M$ [M$_\odot$ yr$^{-1}$]"),
+                       (ax[2], r"(c) Eddington ratio" + ("\nsolid: actual; faint: pre-cap demand" if capped else ""),
+                        r"$\lambda_{\rm Edd}$"),
                        (ax[3], "(d) gas density at the BH", r"$n_{\rm H}$ [cm$^{-3}$]")):
         a.set_yscale("log")
         a.set_ylabel(yl)

@@ -75,6 +75,10 @@ def population_from_catalog(snap, min_star_particles=10, use_inrad=True, central
         pop["m200c"] = pop["m200c_central"]
     if "central" in pop:
         pop["is_central"] = pop["central"]
+    try:
+        pop["target_index"] = cat.target_index()
+    except Exception:
+        pop["target_index"] = None
     return pop
 
 
@@ -104,7 +108,13 @@ def _track_colour(fig, ax, x, y, z, label=None, cmap="viridis", s=22):
 
 
 def plot_smhm(hist, units, outpath, pop=None, title=None):
-    """Stellar mass -- halo mass, with Moster+13 and Behroozi+13."""
+    """Stellar mass -- halo mass, with Moster+13 and Behroozi+13.
+
+    (a) the target galaxy's track against M200c.  (b) every central galaxy of
+    the final snapshot against its **FoF group mass** (``GroupMass``), one point
+    per group (a satellite's group mass is its host's, so satellites are left
+    out), with the target galaxy as a large circle.  The published relations
+    are against M200c/Mvir; the FoF mass is typically ~10-20 % larger."""
     R = float(np.max(hist["_radii_kpc"]))
     mh = hist.get("mhalo_msun")
     ms = history.key(hist, "mstar", R)
@@ -130,21 +140,41 @@ def plot_smhm(hist, units, outpath, pop=None, title=None):
         a.plot(grid, grid * units.OmegaBaryon / units.Omega0, color=PALETTE["grey"], ls=":", lw=1.0, label=r"$f_{\rm b}\,M_{\rm h}$")
         a.set_xscale("log")
         a.set_yscale("log")
-        a.set_xlabel(r"$M_{\rm 200c}$ [M$_\odot$]")
         a.set_ylabel(r"$M_\star$ [M$_\odot$]")
+    ax[0].set_xlabel(r"$M_{\rm 200c}$ [M$_\odot$]")
+    ax[1].set_xlabel(r"$M_{\rm group}$ (FoF) [M$_\odot$]")
 
     sc = _track_colour(fig, ax[0], mh, ms, hist["z"], label="central, this run")
     fig.colorbar(sc, ax=ax[0], label="redshift")
     ax[0].legend(loc="upper left", fontsize=7)
     label_panel(ax[0], "(a) track of the central (%s)" % _aperture_label(hist), loc="lower right")
 
-    if pop is not None and pop["count"] and "m200c" in pop:
-        ax[1].scatter(pop["m200c"], pop["mstar"], s=14, color=PALETTE["black"], alpha=0.6, label=r"subhaloes, $z=%.2f$" % pop["z"])
+    xlo_b, xhi_b = 10 ** 8.5, 10 ** 13.5
+    if pop is not None and pop["count"]:
+        xg = pop.get("mgroup_central")
+        xkey = "M_group"
+        if xg is None:   # catalogue without GroupMass: fall back to M200c
+            xg, xkey = pop.get("m200c"), "M200c"
+        if xg is not None:
+            ok = np.isfinite(xg) & (xg > 0) & (pop["mstar"] > 0)
+            ax[1].scatter(xg[ok], pop["mstar"][ok], s=6, color=PALETTE["black"], alpha=0.7, lw=0,
+                          label=r"centrals, $z=%.2f$ (%d)" % (pop["z"], ok.sum()))
+            if ok.any():
+                xlo_b = min(xlo_b, 10 ** np.floor(np.log10(np.min(xg[ok]))))
+                xhi_b = max(xhi_b, 10 ** np.ceil(np.log10(np.max(xg[ok]))))
+            ti = pop.get("target_index")
+            hit = np.where(np.asarray(pop.get("subhalo_index", [])) == ti)[0] if ti is not None else []
+            if len(hit) and np.isfinite(xg[hit[0]]):
+                ax[1].scatter(xg[hit[0]], pop["mstar"][hit[0]], s=110, color=PALETTE["vermillion"], edgecolor="k",
+                              lw=0.8, zorder=5, label="target galaxy")
+            if xkey != "M_group":
+                ax[1].set_xlabel(r"$M_{\rm 200c}$ [M$_\odot$] (no GroupMass in the catalogue)")
     ax[1].legend(loc="upper left", fontsize=7)
     label_panel(ax[1], "(b) population at the final snapshot", loc="lower right")
 
+    ax[0].set_xlim(10 ** 8.5, 10 ** 13.5)
+    ax[1].set_xlim(xlo_b, xhi_b)
     for a in ax:
-        a.set_xlim(10 ** 8.5, 10 ** 13.5)
         a.set_ylim(1e4, 1e12)
     if title:
         fig.suptitle(title, y=1.02)

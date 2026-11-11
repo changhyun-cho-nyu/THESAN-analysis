@@ -122,9 +122,9 @@ def model_summary(snap):
     # split.  blackhole_bondi_rate()/blackhole_alpha_disk_rate()/
     # blackhole_torque_limited_rate() fprintf their *own* local "mdot" before
     # returning it to blackhole_calculate_mdot(), which then still applies the
-    # Eddington cap (blackhole_mdot.cc:187-188) and, if BH_EXACT_INTEGRATION is
+    # Eddington cap (blackhole_mdot.cc:199-200) and, if BH_EXACT_INTEGRATION is
     # on, throws that value away entirely and substitutes the analytic
-    # sub-step-averaged accretion rate (blackhole_mdot.cc:159-216) -- so the
+    # sub-step-averaged accretion rate (blackhole_mdot.cc:168-238) -- so the
     # logged "mdot" is the raw pre-cap, pre-integration estimate, not what
     # happened.  See plot_accretion_internals / check_mode_switch.
     mdot_caveats = [f for f in ("BH_EXACT_INTEGRATION", "BH_ADIOS_WIND", "BH_PRESSURE_CRITERION") if f in cfg]
@@ -466,6 +466,30 @@ def plot_axis_stability(bipolar, units, outpath, bh_id=None, title=None):
 # ---------------------------------------------------------------------------
 
 
+def _enforced_mdot(mdot_raw, mbh, units, params=None, summary=None):
+    """The accretion rate the simulation actually used, rebuilt from the
+    pre-cap ``blackhole_details`` rate.
+
+    With the Eddington limit compiled in (the default) the code clips at
+    ``BlackHoleEddingtonFactor * mdot_Edd`` (blackhole_mdot.cc:199-200), so we
+    clip too.  With ``BH_NO_EDDINGTON_LIMIT`` there is no Eddington cap: the
+    code applies the kernel gas's free-fall supply rate instead
+    (``blackhole_freefall_limit``), which needs the gas around the BH and is
+    not in the log -- so the raw rate is returned and ``note`` says so.
+
+    Returns ``(mdot, eddington_capped, note)`` in Msun/yr.
+    """
+    cfg = (summary or {}).get("config") or {}
+    if io.has_option(cfg, "BH_NO_EDDINGTON_LIMIT"):
+        return mdot_raw, False, ("no Eddington cap in this build (BH_NO_EDDINGTON_LIMIT): raw rates; "
+                                 "the free-fall cap the code applies instead cannot be rebuilt from the log")
+    edd_factor = float(params.get("BlackHoleEddingtonFactor", 1.0)) if params else 1.0
+    edd = units.eddington_rate_msun_per_yr(np.maximum(mbh, 1e-30))  # the run's own efficiency
+    with np.errstate(invalid="ignore"):
+        mdot = np.where(edd > 0, np.minimum(mdot_raw, edd_factor * edd), mdot_raw)
+    return mdot, True, "capped at %g x Eddington, as the code does" % edd_factor
+
+
 def plot_accretion_internals(details, units, outpath, params=None, summary=None, title=None):
     """Model-dependent panels from ``blackhole_details``.
 
@@ -474,16 +498,18 @@ def plot_accretion_internals(details, units, outpath, params=None, summary=None,
 
     ``blackhole_details``'s "mdot" column is logged *inside*
     ``blackhole_bondi_rate()`` (or the alpha-disc/torque equivalent), before
-    the caller applies the Eddington cap (``blackhole_mdot.cc:187-188``) and,
+    the caller applies the Eddington cap (``blackhole_mdot.cc:199-200``) and,
     if ``BH_EXACT_INTEGRATION`` is compiled in, before that cap value is
     itself discarded in favour of an analytically sub-step-averaged rate
-    (``blackhole_mdot.cc:159-216``).  So the raw column can run many orders of
+    (``blackhole_mdot.cc:168-238``).  So the raw column can run many orders of
     magnitude above the Eddington rate even though the black hole never
     actually accreted anywhere near that fast -- every panel here therefore
     also shows ``mdot`` clipped at ``BlackHoleEddingtonFactor * mdot_Edd``,
     which is what the simulation actually enforced, and uses the clipped
     value for lambda_Edd (panels b, e) so the mode-switch fraction quoted in
-    panel (b) is not inflated by the un-clipped tail.  This clip still cannot
+    panel (b) is not inflated by the un-clipped tail.  A build with
+    ``BH_NO_EDDINGTON_LIMIT`` has no such cap, so there the raw rate is used
+    and the figure says so (:func:`_enforced_mdot`).  This clip still cannot
     reproduce BH_EXACT_INTEGRATION's sub-step averaging exactly -- see the
     caveat printed on the figure when that flag is set, and
     :func:`check_mode_switch`.
@@ -496,10 +522,8 @@ def plot_accretion_internals(details, units, outpath, params=None, summary=None,
     t = units.age_gyr(details["time"])
     mdot_raw = details["mdot"] * units.mdot_to_msun_per_yr
     mbh = details["bh_mass"] * units.mass_to_msun
-    edd_factor = float(params.get("BlackHoleEddingtonFactor", 1.0)) if params else 1.0
     edd = units.eddington_rate_msun_per_yr(np.maximum(mbh, 1e-30))  # the run's own efficiency
-    with np.errstate(invalid="ignore"):
-        mdot = np.where(edd > 0, np.minimum(mdot_raw, edd_factor * edd), mdot_raw)  # Eddington-capped, as the code enforces
+    mdot, capped, cap_note = _enforced_mdot(mdot_raw, mbh, units, params, summary)
     with np.errstate(divide="ignore", invalid="ignore"):
         lam = np.where(edd > 0, mdot / edd, np.nan)
     caveats = (summary or {}).get("mdot_caveats") or []
@@ -511,8 +535,12 @@ def plot_accretion_internals(details, units, outpath, params=None, summary=None,
     # (a) mdot vs time -- raw estimate faint in the background, the
     # Eddington-capped value (what the code actually used) on top.
     a = ax[0, 0]
-    a.plot(t, np.where(mdot_raw > 0, mdot_raw, np.nan), ".", ms=1.0, color=PALETTE["grey"], alpha=0.15, label="raw (pre-cap) estimate")
-    a.plot(t, np.where(mdot > 0, mdot, np.nan), ".", ms=1.5, color=C["bh"], alpha=0.5, label="Eddington-capped")
+    if capped:
+        a.plot(t, np.where(mdot_raw > 0, mdot_raw, np.nan), ".", ms=1.0, color=PALETTE["grey"], alpha=0.15, label="raw (pre-cap) estimate")
+        a.plot(t, np.where(mdot > 0, mdot, np.nan), ".", ms=1.5, color=C["bh"], alpha=0.5, label="Eddington-capped")
+    else:
+        a.plot(t, np.where(mdot > 0, mdot, np.nan), ".", ms=1.5, color=C["bh"], alpha=0.5, label="logged rate (no Eddington cap)")
+        a.text(0.02, 0.10, cap_note.replace("; ", ";\n", 1), transform=a.transAxes, fontsize=5.5, color=PALETTE["vermillion"])
     a.legend(fontsize=6, markerscale=4, loc="upper right")
     if caveats:
         a.text(0.02, 0.02, "caveat: %s active -- true rate is further time-averaged" % "/".join(caveats),
@@ -522,19 +550,51 @@ def plot_accretion_internals(details, units, outpath, params=None, summary=None,
     a.set_xlabel("age [Gyr]")
     label_panel(a, "(a) accretion rate")
 
-    # (b) Eddington ratio distribution
+    # (b) Eddington ratio: what the BH asked for (the logged, pre-cap rate) and
+    # what it actually got (capped, if the build caps), on one log axis that
+    # ends at log lambda = 2 (100 x Eddington); rows beyond go in the last bin.
     a = ax[0, 1]
     good = np.isfinite(lam) & (lam > 0)
     if good.any():
-        a.hist(np.log10(lam[good]), bins=50, color=C["bh"], alpha=0.8)
-        a.axvline(0.0, color=PALETTE["vermillion"], ls="--", lw=1.0)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            lam_raw = np.where(edd > 0, mdot_raw / edd, np.nan)
+        graw = np.isfinite(lam_raw) & (lam_raw > 0)
+        xmax = 2.0
+        xmin = min(-1.0, float(np.floor(np.log10(lam_raw[graw] if graw.any() else lam[good]).min())))
+        edges = np.linspace(xmin, xmax, 61)
+
+        def _clip(v):
+            return np.clip(np.log10(v), xmin, xmax - 1e-9)
+
+        shown = lam_raw[graw] if capped else lam[good]
+        if capped:
+            a.hist(_clip(lam_raw[graw]), bins=edges, histtype="stepfilled", color=PALETTE["orange"], alpha=0.35,
+                   label="demand (pre-cap)")
+            a.hist(_clip(lam[good]), bins=edges, histtype="stepfilled", color=PALETTE["purple"], alpha=0.7,
+                   label="actual (capped)")
+            both = good & graw
+            hit = float(np.mean(mdot[both] < mdot_raw[both] * (1 - 1e-9))) if both.any() else 0.0
+            a.text(0.03, 0.62, "%.1f%% of rows hit the cap" % (100 * hit), transform=a.transAxes, fontsize=7)
+            edd_factor = float(params.get("BlackHoleEddingtonFactor", 1.0)) if params else 1.0
+            if edd_factor != 1.0:
+                a.axvline(np.log10(edd_factor), color=PALETTE["vermillion"], ls=":", lw=1.0,
+                          label=r"cap ($%g\times$ Edd)" % edd_factor)
+        else:
+            a.hist(_clip(lam[good]), bins=edges, histtype="stepfilled", color=PALETTE["purple"], alpha=0.7,
+                   label="actual (no Eddington cap)")
+        a.axvline(0.0, color=PALETTE["vermillion"], ls="--", lw=1.0, label="Eddington")
+        over = int(np.sum(shown > 10 ** xmax))
+        if over:
+            a.text(0.97, 0.50, "%d rows > 100\n(max %.3g)\nin last bin" % (over, float(np.max(shown))),
+                   transform=a.transAxes, fontsize=6, ha="right")
+        a.set_xlim(xmin, xmax)
         if params and "BHBipolarInjEddThreshold" in params:
             thr = float(params["BHBipolarInjEddThreshold"])
             if thr > 0:
                 a.axvline(np.log10(thr), color=PALETTE["blue"], ls="-", lw=1.4, label=r"mode switch $\lambda=%.3g$" % thr)
-                a.legend(fontsize=7)
                 above = float(np.mean(lam[good] >= thr))
                 a.text(0.03, 0.78, "%.1f%% of rows above\n=> thermal mode" % (100 * above), transform=a.transAxes, fontsize=7)
+        a.legend(fontsize=6, loc="upper left", bbox_to_anchor=(0.0, 0.58))
     a.set_xlabel(r"$\log_{10}\lambda_{\rm Edd}$")
     a.set_ylabel("rows")
     label_panel(a, "(b) Eddington ratio")
@@ -584,7 +644,8 @@ def plot_accretion_internals(details, units, outpath, params=None, summary=None,
     # (e) duty cycle
     a = ax[1, 1]
     if good.any():
-        thresholds = np.logspace(-6, 0.5, 40)
+        top = max(0.5, float(np.log10(np.nanmax(lam[good])))) if not capped else 0.5
+        thresholds = np.logspace(-6, top, 40)
         duty = [np.mean(lam[np.isfinite(lam)] >= th) for th in thresholds]
         a.plot(thresholds, duty, color=C["bh"])
         a.set_xscale("log")
@@ -851,8 +912,9 @@ def check_mode_switch(details, inj, units, params, summary=None):
     check divided by it on the assumption that the switch does; that made the
     two diagnostics disagree with each other.)  ``mdot`` is additionally
     clipped at ``BlackHoleEddingtonFactor * mdot_Edd``, matching the cap the
-    code itself applies (blackhole_mdot.cc:187-188) before the switch is
-    evaluated -- but this cannot fix a build with ``BH_EXACT_INTEGRATION``
+    code itself applies (blackhole_mdot.cc:199-200) before the switch is
+    evaluated (not with ``BH_NO_EDDINGTON_LIMIT``, which has no such cap; see
+    :func:`_enforced_mdot`) -- but this cannot fix a build with ``BH_EXACT_INTEGRATION``
     (see the module docstring): there the value the switch actually acts on
     is a sub-step time average that ``blackhole_details`` never logs (only the
     pre-integration instantaneous rate is), so a residual disagreement with
@@ -868,14 +930,12 @@ def check_mode_switch(details, inj, units, params, summary=None):
     if not np.isfinite(thr):
         return "mode-switch check: BHBipolarInjEddThreshold is not among the run's parameters (single-mode build)."
 
-    edd_factor = float(params.get("BlackHoleEddingtonFactor", 1.0))
     caveats = (summary or {}).get("mdot_caveats") or []
 
     mbh = details["bh_mass"] * units.mass_to_msun
     mdot_raw = details["mdot"] * units.mdot_to_msun_per_yr
     edd = units.eddington_rate_msun_per_yr(np.maximum(mbh, 1e-30))  # the run's own efficiency
-    with np.errstate(invalid="ignore"):
-        mdot = np.where(edd > 0, np.minimum(mdot_raw, edd_factor * edd), mdot_raw)
+    mdot, capped, cap_note = _enforced_mdot(mdot_raw, mbh, units, params, summary)
     with np.errstate(divide="ignore", invalid="ignore"):
         lam = np.where(edd > 0, mdot / edd, np.nan)
 
@@ -901,6 +961,7 @@ def check_mode_switch(details, inj, units, params, summary=None):
         "mode-switch consistency check",
         "  BHBipolarInjEddThreshold      : %g" % thr,
         "  predicted thermal fraction    : %.3f  (from %d detail rows, dt-weighted per BH)" % (pred_thermal, int(good.sum())),
+        "  accretion rate used           : %s" % cap_note,
     ]
     if inj is not None and np.isfinite(inj.get("n_thermal", np.array([np.nan]))).any():
         nt, nk = np.nansum(inj["n_thermal"]), np.nansum(inj["n_kinetic"])
@@ -911,7 +972,7 @@ def check_mode_switch(details, inj, units, params, summary=None):
             if "BH_EXACT_INTEGRATION" in caveats:
                 lines.append("           expected for this build: BH_EXACT_INTEGRATION is on, so the mdot")
                 lines.append("           the switch actually compares to BHBipolarInjEddThreshold is a")
-                lines.append("           sub-step time average (blackhole_mdot.cc:159-216) that never")
+                lines.append("           sub-step time average (blackhole_mdot.cc:168-238) that never")
                 lines.append("           reaches blackhole_details -- only the pre-integration instantaneous")
                 lines.append("           rate does.  Not fixable from these logs; blackholes.txt's aggregate")
                 lines.append("           mdot (fig 09) is the one quantity guaranteed to match what happened.")
@@ -1090,6 +1151,7 @@ FIGURE_REQUIREMENTS = (
     ("17", "bh_tracks", "blackhole_details"),
     ("18", "bh_local_mesh", "a snapshot with gas and black holes"),
     ("19", "slr_mesh", "a snapshot of an SLR_BH build with black holes"),
+    ("20", "galaxy_view", "a readable snapshot with stars or gas"),
 )
 
 NOT_APPLICABLE = "n/a"
@@ -1151,7 +1213,7 @@ def figure_applicability(summary, logs, produced, has_snapshots=True, has_histor
                   "the snapshot instead")
         elif fid in ("01", "03") and not has_history:
             na = "needs the particle snapshot history, which was not built"
-        elif fid in ("10", "11", "12", "13", "14") and not has_snapshots:
+        elif fid in ("10", "11", "12", "13", "14", "20") and not has_snapshots:
             na = "needs a readable snapshot"
         elif fid in ("16", "18") and not has_snapshots:
             na = "needs a readable snapshot"

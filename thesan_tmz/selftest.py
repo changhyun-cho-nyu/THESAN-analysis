@@ -338,6 +338,7 @@ def run(workdir=None, keep=False, make_figures=True):
     _check_local_mesh(c, s_)
     _check_slr_mesh(c)
     _check_lowres(c, s_, tmp)
+    _check_eddington_cap(c, s_.units)
     c.check("history: cache round-trips", _cache_roundtrip_ok(out, hist))
     lam_expect = hist["bh_mdot_msun_per_yr"] / hist["_units"].eddington_rate_msun_per_yr(hist["bh_mass_msun"], _mockrun.EPS_R)
     c.check("history: Eddington ratio uses the run's eps (0.2), not 0.1",
@@ -543,6 +544,33 @@ def _check_lowres(c, snap, tmp):
             list(bh_logs.drop_bhs(det, {1})["id"]) == [2, 3]
             and list(bh_logs.drop_bhs(mer, {4}, ("id_survivor", "id_swallowed"))["time"]) == [0.5])
     shutil.rmtree(os.path.dirname(out2), ignore_errors=True)
+
+
+def _check_eddington_cap(c, units):
+    """Fig 08 / mode-switch check cap the logged rate only when the build caps."""
+    from . import diagnostics as dg
+
+    print("\n[Eddington cap in the details figures]")
+    mbh = np.array([1e6, 1e6, 1e6])
+    edd = units.eddington_rate_msun_per_yr(mbh)
+    raw = edd * np.array([0.1, 3.0, 300.0])
+    capped, on, _ = dg._enforced_mdot(raw, mbh, units, {"BlackHoleEddingtonFactor": 1.0}, {"config": {"BLACK_HOLES": 1}})
+    c.check("Eddington cap: default build clips at BlackHoleEddingtonFactor x Edd",
+            on and np.allclose(capped / edd, [0.1, 1.0, 1.0]))
+    capped2, _, _ = dg._enforced_mdot(raw, mbh, units, {"BlackHoleEddingtonFactor": 2.0}, {"config": {}})
+    c.check("Eddington cap: factor 2 clips at 2 x Edd", np.allclose(capped2 / edd, [0.1, 2.0, 2.0]))
+    free, on3, note = dg._enforced_mdot(raw, mbh, units, {"BlackHoleEddingtonFactor": 1.0},
+                                        {"config": {"BH_NO_EDDINGTON_LIMIT": 1}})
+    c.check("Eddington cap: BH_NO_EDDINGTON_LIMIT keeps the raw rate (super-Eddington visible) and says why",
+            not on3 and np.array_equal(free, raw) and "BH_NO_EDDINGTON_LIMIT" in note)
+    det = {"time": np.array([0.10, 0.11, 0.12]), "id": np.array([1, 1, 1]), "bh_mass": mbh / units.mass_to_msun,
+           "mdot": raw / units.mdot_to_msun_per_yr}
+    prm = {"BlackHoleEddingtonFactor": 1.0, "BHBipolarInjEddThreshold": 2.0}
+    r_cap = dg.check_mode_switch(det, None, units, prm, summary={"config": {}})
+    r_free = dg.check_mode_switch(det, None, units, prm, summary={"config": {"BH_NO_EDDINGTON_LIMIT": 1}})
+    c.check("mode-switch check: lambda >= 2 never happens with the cap, does without it",
+            "predicted thermal fraction    : 0.000" in r_cap and "predicted thermal fraction    : 0.000" not in r_free
+            and "no Eddington cap" in r_free)
 
 
 def _check_slr_mesh(c):
