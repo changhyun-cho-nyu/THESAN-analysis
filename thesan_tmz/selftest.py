@@ -341,6 +341,7 @@ def run(workdir=None, keep=False, make_figures=True):
     _check_eddington_cap(c, s_.units)
     _check_maps(c, s_)
     _check_uv(c, s_)
+    _check_kinematics(c, s_)
     c.check("history: cache round-trips", _cache_roundtrip_ok(out, hist))
     lam_expect = hist["bh_mdot_msun_per_yr"] / hist["_units"].eddington_rate_msun_per_yr(hist["bh_mass_msun"], _mockrun.EPS_R)
     c.check("history: Eddington ratio uses the run's eps (0.2), not 0.1",
@@ -685,6 +686,95 @@ def _check_uv(c, snap):
             len(st21) == 1 and st21[0][2] == "n/a" and "table not found" in st21[0][3], str(st21))
 
 
+def _check_kinematics(c, snap):
+    """Fig 22: spin angles and v/sigma on a synthetic rotating disc; bound-star slice and its order check."""
+    from . import galaxy, kinematics as kin
+
+    print("\n[kinematics]")
+    rng = np.random.default_rng(11)
+
+    def disc(n, axis, vrot, sig):
+        e3 = np.asarray(axis, dtype=float) / np.linalg.norm(axis)
+        e1 = np.cross([0.0, 0.0, 1.0] if abs(e3[2]) < 0.9 else [1.0, 0.0, 0.0], e3)
+        e1 /= np.linalg.norm(e1)
+        e2 = np.cross(e3, e1)
+        R = rng.uniform(0.05, 2.0, n)
+        ph = rng.uniform(0, 2 * np.pi, n)
+        pos = np.outer(R * np.cos(ph), e1) + np.outer(R * np.sin(ph), e2) + np.outer(rng.normal(0, 0.05, n), e3)
+        vel = vrot * (np.outer(-np.sin(ph), e1) + np.outer(np.cos(ph), e2)) + rng.normal(0, sig, (n, 3))
+        return pos, vel
+
+    ax_s = np.array([0.2, -0.3, 0.93])
+    tilt = np.radians(40.0)
+    ax_g = np.array([np.sin(tilt), 0.0, np.cos(tilt)])                 # 40 deg from z
+    rot = np.cross([0.0, 0.0, 1.0], ax_s / np.linalg.norm(ax_s))
+    th = np.arccos(ax_s[2] / np.linalg.norm(ax_s))
+    k = rot / np.linalg.norm(rot)
+    K = np.array([[0, -k[2], k[1]], [k[2], 0, -k[0]], [-k[1], k[0], 0]])
+    Rm = np.eye(3) + np.sin(th) * K + (1 - np.cos(th)) * K @ K           # takes z to ax_s
+    ax_g = Rm @ ax_g                                                    # gas axis: 40 deg from the stars'
+    ps, vs = disc(20000, ax_s, 150.0, 50.0)
+    pg, vg = disc(20000, ax_g, 120.0, 0.0)
+    bulk = np.array([300.0, -100.0, 50.0])
+    stars = dict(pos=ps, vel=vs + bulk, mass=np.ones(len(ps)), age_myr=np.where(np.arange(len(ps)) % 2, 5.0, 500.0))
+    gas = dict(pos=pg, vel=vg + bulk, mass=np.ones(len(pg)), sfr=np.ones(len(pg)))
+    tab = kin.compute(stars, gas, rhalf_kpc=1.0, radii_rhalf=(0.5, 1.0, 3.0))
+    big = tab["spheres"][-1]
+    c.check("kinematics: angle(L_star, L_gas) = the 40 deg tilt; star spin axis found; bulk velocity removed",
+            abs(big["ang_star_gas"] - 40.0) < 1.0 and kin.angle_deg(tab["axis"], ax_s) < 1.0
+            and np.allclose(tab["vframe"], bulk, atol=3.0),
+            "%.2f deg, axis %.2f deg off, vframe %s" % (big["ang_star_gas"], kin.angle_deg(tab["axis"], ax_s),
+                                                         np.round(tab["vframe"], 1)))
+    c.check("kinematics: v/sigma of a disc with v_rot 150, sigma 50 km/s: v ~ 150, sigma_z ~ sigma_1D ~ 50 (2 %)",
+            abs(big["all_v"] - 150) < 3 and abs(big["all_sigz"] - 50) < 1.0 and abs(big["all_sig1d"] - 50) < 1.0
+            and abs(big["young_v"] - 150) < 4 and big["young_n"] == big["all_n"] // 2,
+            "v %.1f sig_z %.1f sig_1D %.1f" % (big["all_v"], big["all_sigz"], big["all_sig1d"]))
+    c.check("kinematics: shells cover the spheres (star counts add up)",
+            sum(x["all_n"] for x in tab["shells"]) == big["all_n"])
+
+    # bound-star slice: a catalogue whose offset/length cover the mock's stars and whose r_1/2 is right
+    # is accepted; a wrong r_1/2 (snapshot not group-ordered) is refused
+    st = snap.part(io.PT_STAR, ["Coordinates", "Masses"])
+    nst = int(st["count"])
+    L = snap.units.length_to_kpc(snap.a)
+    m = np.asarray(st["Masses"], dtype=float)
+    cm = np.average(np.asarray(st["Coordinates"], dtype=float), axis=0, weights=m)
+    r = np.linalg.norm(io.periodic_delta(st["Coordinates"], cm, snap.boxsize), axis=1)
+    o = np.argsort(r)
+    rh = r[o][np.searchsorted(np.cumsum(m[o]), 0.5 * m.sum())]
+
+    class FakeCat:
+        def __init__(self, rh_code):
+            lt = np.zeros((1, 6), dtype=np.int64)
+            lt[0, 4] = nst
+            hr = np.zeros((1, 6))
+            hr[0, 4] = rh_code
+            self.d = {"offsettype": np.zeros((1, 6), dtype=np.int64), "lentype": lt, "halfmassradtype": hr,
+                      "pos": cm[None, :]}
+
+        def s(self, k, default=None):
+            return self.d.get(k, default)
+
+        def target_index(self):
+            return 0
+
+    good, why_g = kin.bound_stars(snap, FakeCat(rh), 0)
+    bad, why_b = kin.bound_stars(snap, FakeCat(3.0 * rh), 0)
+    c.check("kinematics: bound-star slice accepted when half its mass lies within the catalogue r_1/2; "
+            "refused (not group-ordered) when not",
+            good is not None and np.isclose(good["rhalf_kpc"], rh * L) and bad is None and "group-ordered" in why_b,
+            "%s | %s" % (why_g, why_b))
+    with tempfile.TemporaryDirectory() as td:
+        out = kin.plot(tab, os.path.join(td, "22_kinematics.png"), title="selftest", z=4.0)
+        c.check("kinematics: fig 22 is drawn", out is not None and os.path.isfile(out))
+    rows = diagnostics.figure_applicability({}, {}, [], no_kinematics="catalogue has no SubhaloOffsetType")
+    r22 = [x for x in rows if x[0] == "22"]
+    c.check("fig 22 is 'not applicable' with the reason when there is no bound-star slice",
+            len(r22) == 1 and r22[0][2] == "n/a" and "SubhaloOffsetType" in r22[0][3], str(r22))
+    lines = kin.report_lines(tab, "selftest")
+    c.check("kinematics: report block lists every sphere and shell", lines.count("shell ") == 3 and lines.count("r < ") == 3)
+
+
 def _check_maps(c, snap):
     """Adaptive projection, galaxy spin axis, softening."""
     from . import galaxy, maps
@@ -952,8 +1042,12 @@ def _check_scenarios(c, tmp):
                 not (want_na & made), "unexpectedly present: %s" % sorted(want_na & made))
 
         c.check("%s: 18_bh_local_mesh.html written" % name, os.path.exists(os.path.join(figdir, "18_bh_local_mesh.html")))
+        from . import kinematics as kin_
+
+        kst_, kwhy_ = kin_.bound_stars(snap)
         rows = diagnostics.figure_applicability(
-            summ, logs, [os.path.join(figdir, f) for f in os.listdir(figdir) if f.endswith((".png", ".html"))])
+            summ, logs, [os.path.join(figdir, f) for f in os.listdir(figdir) if f.endswith((".png", ".html"))],
+            no_kinematics=None if kst_ is not None else kwhy_)
         status = {r[0]: r[2] for r in rows}
         c.check("%s: nothing reported as a real gap" % name,
                 not [k for k, v in status.items() if v == diagnostics.MISSING],

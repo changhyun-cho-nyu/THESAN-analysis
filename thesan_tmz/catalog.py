@@ -71,6 +71,7 @@ SUB_ALIASES = {
     "massinradtype": ("SubhaloMassInRadType",),
     "massinhalfradtype": ("SubhaloMassInHalfRadType",),
     "lentype": ("SubhaloLenType",),
+    "offsettype": ("SubhaloOffsetType",),
     "halfmassradtype": ("SubhaloHalfmassRadType",),
     "halfmassrad": ("SubhaloHalfmassRad",),
     "veldisp": ("SubhaloVelDisp",),

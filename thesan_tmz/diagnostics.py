@@ -1153,6 +1153,7 @@ FIGURE_REQUIREMENTS = (
     ("19", "slr_mesh", "a snapshot of an SLR_BH build with black holes"),
     ("20", "galaxy_view", "a readable snapshot with stars or gas"),
     ("21", "gas_uv", "a snapshot and the run's spectrum tables (SpectrumTablePath)"),
+    ("22", "kinematics", "a snapshot whose catalogue has SubhaloOffsetType (group-ordered)"),
 )
 
 NOT_APPLICABLE = "n/a"
@@ -1162,7 +1163,7 @@ MISSING = "MISSING"
 
 
 def figure_applicability(summary, logs, produced, has_snapshots=True, has_history=True,
-                         has_catalog=True, skipped=(), all_bh_lowres=False, no_uv=None):
+                         has_catalog=True, skipped=(), all_bh_lowres=False, no_uv=None, no_kinematics=None):
     """Classify every figure as produced / not applicable / missing.
 
     The distinction is the point.  A run built without ``BH_BIPOLAR_INJECTION``
@@ -1175,7 +1176,8 @@ def figure_applicability(summary, logs, produced, has_snapshots=True, has_histor
     ``produced`` is the list of files ``run_all`` actually wrote; ``skipped`` is
     the ids the user deliberately turned off (``--no-maps``, ``--catalog-only``),
     which must not be reported as gaps.  ``no_uv`` is the reason the run has no
-    stellar UV (no spectrum tables), which makes fig 21 not applicable.
+    stellar UV (no spectrum tables), which makes fig 21 not applicable;
+    ``no_kinematics`` the reason fig 22 could not be made (no bound-star slice).
 
     Returns a list of ``(id, name, status, reason)``.
     """
@@ -1219,6 +1221,8 @@ def figure_applicability(summary, logs, produced, has_snapshots=True, has_histor
             na = "needs a readable snapshot"
         elif fid == "21" and no_uv:
             na = "no stellar UV: %s" % no_uv
+        elif fid == "22" and no_kinematics:
+            na = no_kinematics
         elif fid in ("16", "18") and not has_snapshots:
             na = "needs a readable snapshot"
         elif fid == "19" and not io.has_option(cfg, "SLR_BH"):

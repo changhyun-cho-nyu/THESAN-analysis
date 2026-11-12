@@ -22,7 +22,7 @@ import traceback
 import numpy as np
 
 from . import arepo_io as io
-from . import bh_logs, bh_population, catalog, diagnostics, evolution, galaxy, history, local_mesh, lowres, maps, scaling, slr_mesh, tree as tree_mod, uv
+from . import bh_logs, bh_population, catalog, diagnostics, evolution, galaxy, history, kinematics, local_mesh, lowres, maps, scaling, slr_mesh, tree as tree_mod, uv
 from .plotstyle import apply_style
 
 
@@ -60,7 +60,7 @@ def main(argv=None):
     ap.add_argument("--galaxy-extent", type=float, default=None,
                     help="half-size of fig 20 (galaxy view), kpc; default 3 stellar half-mass radii")
     ap.add_argument("--uv-recipe", choices=uv.RECIPES, default="point",
-                    help="stellar UV in figs 20, 21: 'point' = L_nu at exactly 1500 A (Rahul's scripts, default); "
+                    help="stellar UV in figs 20, 21: 'point' = L_nu at exactly 1500 A (default); "
                          "'arepo' = 1490-1510 A average, AREPO's MRT_FOF_1500 (what Subhalo_Luminosity1500 sums)")
     ap.add_argument("--spectra-dir", default=None,
                     help="directory holding the run's spectrum tables (same file names as SpectrumTablePath / "
@@ -315,6 +315,26 @@ def main(argv=None):
                 title=title,
             )
 
+    # -- 6b. kinematics of the galaxy (fig 22) -------------------------------
+    no_kin = "needs a readable snapshot" if last_snap is None else None
+    if last_snap is not None:
+        print("\n--- kinematics ---")
+        kcen, kinfo = galaxy.auto_centre(last_snap, prefer=centre_prefer, bh_id=args.bh_id)
+        if kcen is None:
+            no_kin = "no galaxy centre (%s)" % kinfo.get("reason")
+        else:
+            try:
+                ktab, knote = kinematics.analyse(last_snap, kcen)
+            except Exception as exc:
+                ktab, knote = None, "failed: %s: %s" % (type(exc).__name__, exc)
+            print("  " + knote)
+            reports.append(kinematics.report_lines(ktab, knote))
+            if ktab is None:
+                no_kin = knote
+            else:
+                made += _try("kinematics", kinematics.plot, ktab, os.path.join(figdir, "22_kinematics.png"),
+                             title=title, z=last_snap.z)
+
     # -- 7. what applies to this build, and what is genuinely missing -------
     made = [m for m in made if m]
     skipped = set()
@@ -328,7 +348,7 @@ def main(argv=None):
         summary, logs, made,
         has_snapshots=bool(snaps), has_history=hist is not None, has_catalog=chist is not None,
         skipped=skipped, all_bh_lowres=all_bh_lowres,
-        no_uv=_no_uv_reason(last_snap if snaps else None, args.spectra_dir),
+        no_uv=_no_uv_reason(last_snap if snaps else None, args.spectra_dir), no_kinematics=no_kin,
     )
     # write_report echoes to stdout, so appending is enough -- printing here as
     # well would show the block twice.

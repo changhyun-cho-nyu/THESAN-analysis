@@ -3,7 +3,7 @@ Intrinsic 1500 A luminosity of each star particle, from the run's spectrum table
 
 Two recipes for the per-star value, both returned as L_nu [erg/s/Hz]:
 
-``recipe="point"`` (default; as Rahul's ``plot_stars.py`` / ``heii.py``)
+``recipe="point"`` (default; ``plot_stars.py`` / ``heii.py``)
     L_nu at exactly 1500 A, i.e. E_1500 = hc / 1500 A = 8.2656 eV, linear in E
     between the two table energies around it (:func:`point_lnu`).
 

@@ -41,6 +41,7 @@ Module map
 ``diagnostics`` model-specific health checks unique to this branch
 ``maps``        projections, phase diagrams, jet-frame views, galaxy view
 ``uv``          intrinsic 1500 A luminosity per star from the run's spectrum tables
+``kinematics``  spin directions of stars and gas, v/sigma of the bound stars (fig 22)
 ``plotstyle``   shared matplotlib style and helpers
 ``run_all``     driver that produces the whole figure set
 """
@@ -56,6 +57,7 @@ __all__ = [
     "bh_population",
     "lowres",
     "uv",
+    "kinematics",
     "local_mesh",
     "slr_mesh",
     "galaxy",
