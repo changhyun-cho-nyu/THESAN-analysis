@@ -96,6 +96,7 @@ GRP_ALIASES = {
     "mass": ("GroupMass",),
     "masstype": ("GroupMassType",),
     "lentype": ("GroupLenType",),
+    "offsettype": ("GroupOffsetType",),
     "firstsub": ("GroupFirstSub",),
     "nsubs": ("GroupNsubs",),
     "sfr": ("GroupSFR",),

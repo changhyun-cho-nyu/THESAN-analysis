@@ -22,7 +22,7 @@ import traceback
 import numpy as np
 
 from . import arepo_io as io
-from . import bh_logs, bh_population, catalog, diagnostics, evolution, galaxy, history, kinematics, local_mesh, lowres, maps, scaling, slr_mesh, tree as tree_mod, uv
+from . import bh_logs, bh_population, catalog, contamination, diagnostics, evolution, galaxy, history, kinematics, local_mesh, lowres, maps, scaling, slr_mesh, tree as tree_mod, uv
 from .plotstyle import apply_style
 
 
@@ -355,6 +355,15 @@ def main(argv=None):
             else:
                 made += _try("kinematics", kinematics.plot, ktab, os.path.join(figdir, "22_kinematics.png"),
                              title=title, z=map_snap.z)
+
+    # -- 6c. low-res contamination around the target (report only) --------
+    if map_snap is not None:
+        print("\n--- contamination ---")
+        try:
+            block = contamination.analyse(map_snap)
+        except Exception as exc:
+            block = "CONTAMINATION\n  failed: %s: %s" % (type(exc).__name__, exc)
+        reports.append(block)               # write_report echoes it to stdout
 
     # -- 7. what applies to this build, and what is genuinely missing -------
     made = [m for m in made if m]

@@ -357,6 +357,7 @@ def _run(workdir=None, keep=False, make_figures=True):
     _check_kinematics(c, s_)
     _check_map_snap(c, root, tmp)
     _check_overview_no_bh(c, hist, hist["_units"], tmp)
+    _check_contamination(c, s_, tmp)
     c.check("history: cache round-trips", _cache_roundtrip_ok(out, hist))
     lam_expect = hist["bh_mdot_msun_per_yr"] / hist["_units"].eddington_rate_msun_per_yr(hist["bh_mass_msun"], _mockrun.EPS_R)
     c.check("history: Eddington ratio uses the run's eps (0.2), not 0.1",
@@ -745,6 +746,86 @@ def _check_map_snap(c, root, tmp):
     c.check("--map-snap 999 (no such snapshot): maps skipped with a message, listed as skipped, not missing",
             not seen and "no such snapshot" in log and "22 kinematics          skipped" in log
             and "missing" in log and " 0 missing" in log, str(seen))
+
+
+def _check_contamination(c, snap_ref, tmp):
+    """CONTAMINATION block on a small synthetic snapshot with known low-res particles."""
+    import h5py
+
+    from . import catalog, contamination as con
+
+    print("\n[contamination]")
+    od = os.path.join(tmp, "contam", "output")
+    os.makedirs(od, exist_ok=True)
+    fn = os.path.join(od, "snap_000.hdf5")
+    rng = np.random.default_rng(3)
+    C, R200, box = np.array([500.0, 500.0, 500.0]), 10.0, 1000.0
+    d1 = rng.normal(size=(1000, 3))
+    d1 *= (rng.uniform(0, 1, 1000) ** (1 / 3) * 20.0 / np.linalg.norm(d1, axis=1))[:, None]   # r < 20 = 2 R200
+    r2 = np.array([2.0, 4.0, 8.0, 15.0, 30.0])           # members: first 3 of the group, first 2 of the subhalo
+    p2 = C + np.outer(r2, [1.0, 0.0, 0.0])
+    p3 = C + np.array([[0.0, 50.0, 0.0]])                # 5 R200c, not a member
+    with h5py.File(fn, "w") as f:
+        h = f.create_group("Header")
+        h.attrs["NumPart_ThisFile"] = np.array([0, 1000, 5, 1, 0, 0])
+        h.attrs["NumPart_Total"] = np.array([0, 1000, 5, 1, 0, 0], dtype=np.uint32)
+        h.attrs["MassTable"] = np.array([0, 1.0, 0, 5.0, 0, 0])
+        for k in ("Time", "Redshift", "BoxSize", "Omega0", "OmegaLambda", "HubbleParam"):
+            h.attrs[k] = {"Time": snap_ref.a, "Redshift": snap_ref.z, "BoxSize": box}.get(k, snap_ref.header.get(k, 1.0))
+        h.attrs["NumFilesPerSnapshot"] = 1
+        pg = f.create_group("Parameters")
+        for k, v in snap_ref.parameters.items():
+            if isinstance(v, (int, float, np.integer, np.floating)):
+                pg.attrs[k] = v
+        f.create_group("PartType1")["Coordinates"] = C + d1
+        g2 = f.create_group("PartType2")
+        g2["Coordinates"], g2["Masses"] = p2, np.full(5, 2.0)
+        f.create_group("PartType3")["Coordinates"] = p3
+    snap = io.Snapshot(od, 0)
+
+    class FakeCat:
+        def __init__(self):
+            lt = np.zeros((1, 6), dtype=np.int64)
+            lt[0, 2] = 3
+            slt = np.zeros((1, 6), dtype=np.int64)
+            slt[0, 2] = 2
+            self.G = {"pos": C[None, :], "r200c": [R200], "m200c": [1000.0], "mass": [1100.0], "firstsub": [0],
+                      "offsettype": np.zeros((1, 6), dtype=np.int64), "lentype": lt}
+            self.S = {"groupnr": [0], "offsettype": np.zeros((1, 6), dtype=np.int64), "lentype": slt, "mass": [900.0]}
+
+        def g(self, k, default=None):
+            return self.G.get(k, default)
+
+        def s(self, k, default=None):
+            return self.S.get(k, default)
+
+        def target_index(self):
+            return 0
+
+    orig = catalog.load
+    catalog.load = lambda *a, **k: FakeCat()
+    try:
+        block = con.analyse(snap)
+    finally:
+        catalog.load = orig
+    L = snap.units.length_to_kpc(snap.a)
+    grp_ln = [ln for ln in block.splitlines() if "members of FoF group 0" in ln]
+    sub_ln = [ln for ln in block.splitlines() if "members of main subhalo 0" in ln]
+    c.check("contamination: group members N = 3 at 0.2-0.8 R200c, main subhalo N = 2",
+            grp_ln and ": N = 3," in grp_ln[0] and "min 0.20" in grp_ln[0] and "max 0.80" in grp_ln[0]
+            and sub_ln and ": N = 2," in sub_ln[0], block)
+    c.check("contamination: nearest low-res particle 0.200 R200c, type 2, a member",
+            "= 0.200 R200c (type 2, a member of the group)" in block and ("r = %.3g pkpc" % (2.0 * L)) in block)
+    rows = {ln.split()[0]: ln.split() for ln in block.splitlines() if ln.strip() and ln.split()[0].replace(".", "").isdigit()}
+    c.check("contamination: N_low(<r) = 3, 4, 5, 6 at 1, 2, 4, 6 R200c (types 2 and 3, members or not)",
+            [int(rows[k][1]) for k in ("1", "2", "4", "6")] == [3, 4, 5, 6], str({k: rows[k][1] for k in rows}))
+    # f_low(<1 R200c): 3 low-res of mass 2 against the type-1 mass inside 10 kpc (MassTable 1) + 6
+    rr = np.linalg.norm(d1, axis=1)
+    f1 = 6.0 / (np.sum(rr < 10.0) + 6.0)
+    c.check("contamination: cumulative low-res fraction at 1 R200c = 6 / (M_hi(<R200c) + 6), masses from MassTable too",
+            np.isclose(float(rows["1"][3]), f1, rtol=2e-3), "%s vs %.4g" % (rows["1"][3], f1))
+    no = con.analyse(snap_ref)
+    c.check("contamination: a run with no type 2/3 particles says so", "no low-res contamination possible" in no, no)
 
 
 def _check_overview_no_bh(c, hist, units_, tmp):

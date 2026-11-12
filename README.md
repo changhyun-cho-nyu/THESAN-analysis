@@ -131,7 +131,7 @@ projection maps.
 | `21_gas_uv.png` | gas in grey with the stars' intrinsic UV (1500 Å) on top, face-on and edge-on, same frame as fig 20; the UV fades out over its faintest decades, thin contours one per dex. Not applicable without the run's spectrum tables |
 | `22_kinematics.png` | (a) angle between the spins of the bound stars, all gas and star-forming gas, and of each to the galaxy's spin axis, in spheres of 0.5–5 stellar half-mass radii; (b) v/σ_z and v/σ_1D of all and young (< 10 Myr) bound stars in shells. Table in report.txt (KINEMATICS). Needs `SubhaloOffsetType` and a group-ordered snapshot (checked), else not applicable |
 | `bh_table.txt` | one row per BH in the last snapshot |
-| `report.txt` | the run's configuration, checks, and **which figures apply** |
+| `report.txt` | the run's configuration, checks, and **which figures apply**; also KINEMATICS (fig 22's numbers) and CONTAMINATION: low-res (type 2 and 3) particles around the target's FoF group — members of the group and its main subhalo, the nearest one (clean-sphere radius in R200c), counts and the low-res mass fraction within 0.5–10 R200c, and where that fraction first exceeds 1e-4 … 0.1. Uses the map snapshot (`--map-snap`) |
 
 **Not every run produces every figure, and that is expected.** The end of
 `report.txt` (also printed on screen) labels each figure as *produced*, *not
