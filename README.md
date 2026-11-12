@@ -127,7 +127,8 @@ projection maps.
 | `17_bh_tracks.png` | the history of every BH from `blackhole_details` |
 | `18_bh_local_mesh.html` | interactive 3D view of each BH's cell in its local Voronoi mesh (open in a browser) |
 | `19_slr_mesh.png` | runs with `SLR_BH`: how well the mesh is refined around the target galaxy's most massive BH — cell size and mass vs distance against the refinement target, the fraction of cells on target, and slices through the actual Voronoi cells |
-| `20_galaxy_view.png` | the galaxy **face-on and edge-on** in its own spin frame; rows: all stars, stars < 10 Myr, intrinsic UV 1500 Å (the run's own spectrum tables, as AREPO's `MRT_FOF_1500`), gas; 3 stellar half-mass radii each side (a few hundred pc at z ~ 10; `--galaxy-extent` to set it). A row that cannot be made is left out and the title says why |
+| `20_galaxy_view.png` | the galaxy **face-on and edge-on** in its own spin frame; rows: all stars, stars < 10 Myr, intrinsic UV 1500 Å (L_ν at exactly 1500 Å from the spectrum tables, as Rahul's scripts; `--uv-recipe arepo` for AREPO's 1490–1510 Å average), gas; 3 stellar half-mass radii each side (a few hundred pc at z ~ 10; `--galaxy-extent` to set it). Black background, scale bar, a colour bar inside each row. A row that cannot be made is left out and the title says why |
+| `21_gas_uv.png` | gas in grey with the stars' intrinsic UV (1500 Å) on top, face-on and edge-on, same frame as fig 20; the UV fades out over its faintest decades, thin contours one per dex. Not applicable without the run's spectrum tables |
 | `bh_table.txt` | one row per BH in the last snapshot |
 | `report.txt` | the run's configuration, checks, and **which figures apply** |
 
@@ -153,13 +154,14 @@ the snapshots keep every BH.
 | `--figdir DIR` | where to write the figures |
 | `--snapshots 0-40` or `0,10,20` | only these snapshots |
 | `--catalog-only` | use the group catalogues only (fast; no apertures, gas phases or kinematics) |
-| `--no-maps` | skip the projection figures (10–14, 20), which are slow |
+| `--no-maps` | skip the projection figures (10–14, 20, 21), which are slow |
 | `--stdout run.out` | the run's stdout file(s), comma-separated for restarts; enables fig 06 and the energy ledger |
 | `--bh-id ID` | follow this BH instead of the default one |
 | `--radii 1,2,5,10,30` | aperture radii in physical kpc |
 | `--extent 20` | half-size of the maps, kpc (figs 12, 13) |
 | `--galaxy-extent` | half-size of fig 20, kpc; default 3 stellar half-mass radii, clamped to 0.1-20 kpc |
-| `--spectra-dir DIR` | where the run's spectrum tables are, if the `SpectrumTablePath` / `PopIIISpectrumTablePath` in its parameters do not exist on this machine (same file names) |
+| `--uv-recipe point\|arepo` | stellar UV in figs 20, 21: `point` (default) = L_ν at exactly 1500 Å, as Rahul's scripts; `arepo` = the 1490–1510 Å average AREPO's `MRT_FOF_1500` uses for `Subhalo_Luminosity1500`. The UV-check line against the catalogue always uses `arepo` |
+| `--spectra-dir DIR` | folder with the spectrum tables (UV in figs 20, 21). The file names come from the run's `SpectrumTablePath` / `PopIIISpectrumTablePath`; a run that names none uses `bpass_spectra_bin_chab100_v2.2.1.hdf5` and `pop3_spectra.log-flat.M2p0-250p0.hdf5`. A missing file is skipped (those stars get no UV; the figure title says so). `run_all_tests.sh` passes `/scratch/chcho/Arepo_GFM_Tables` |
 | `--mesh-bhs 10` | 3D page for this many most massive BHs (`0` skips it) |
 | `--show-lowres-bhs` | keep BHs that sit in low-res gas in the per-BH figures (hidden by default) |
 | `--total-mass` | use the total bound mass of each subhalo instead of the mass within twice the half-mass radius |

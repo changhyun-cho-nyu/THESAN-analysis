@@ -24,6 +24,7 @@ ROOTS=(/scratch/chcho/test_BH_ACC_wo_LI /scratch/chcho/test_LI_BH)
 PKG_DIR=${PKG_DIR:-/scratch/chcho/BH_analysis}  # the directory that contains thesan_tmz/
 NPAR=${NPAR:-6}                                 # how many runs to analyse at the same time
 EXTRA=${EXTRA:-}                                # extra run_all options, e.g. "--no-maps"
+SPECTRA_DIR=${SPECTRA_DIR:-/scratch/chcho/Arepo_GFM_Tables}  # BPASS + Pop III spectrum tables (UV in figs 20, 21)
 
 # --- Python environment: edit to match your setup (needs numpy h5py matplotlib scipy plotly) ---
 # module load python scipy-stack
@@ -54,13 +55,13 @@ analyse() {
   tag="$(basename "$(dirname "$run")")/$(basename "$run")"
   mkdir -p "$run/figures"
   echo "[$(date +%T)] start $tag"
-  (cd "$PKG_DIR" && python3 -m thesan_tmz.run_all "$run" --figdir "$run/figures" --title "$tag" $EXTRA) \
+  (cd "$PKG_DIR" && python3 -m thesan_tmz.run_all "$run" --figdir "$run/figures" --title "$tag" --spectra-dir "$SPECTRA_DIR" $EXTRA) \
     > "$run/figures/analysis_log.txt" 2>&1
   local status=$?
   echo "[$(date +%T)] done  $tag (exit $status) -> $run/figures/analysis_log.txt"
 }
 export -f analyse
-export PKG_DIR EXTRA
+export PKG_DIR EXTRA SPECTRA_DIR
 
 echo "analysing ${#runs[@]} runs, $NPAR at a time"
 printf '%s\n' "${runs[@]}" | xargs -P "$NPAR" -I{} bash -c 'analyse "$1"' _ {}

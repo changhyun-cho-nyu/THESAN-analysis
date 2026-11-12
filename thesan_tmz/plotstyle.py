@@ -174,13 +174,14 @@ def shade_band(ax, x, lo, hi, color, alpha=0.18, label=None, zorder=0):
     return ax.fill_between(x, lo, hi, color=color, alpha=alpha, lw=0, label=label, zorder=zorder)
 
 
-def savefig(fig, path, verbose=True):
+def savefig(fig, path, verbose=True, **kw):
+    """Save and close ``fig``; ``kw`` goes to ``Figure.savefig`` (e.g. facecolor)."""
     import os
 
     d = os.path.dirname(os.path.abspath(path))
     if d:
         os.makedirs(d, exist_ok=True)
-    fig.savefig(path)
+    fig.savefig(path, **kw)
     plt.close(fig)
     if verbose:
         print("  wrote %s" % path)

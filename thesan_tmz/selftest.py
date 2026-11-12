@@ -23,7 +23,7 @@ import numpy as np
 
 from . import _mockrun, arepo_io as io
 from . import bh_logs, catalog, diagnostics, evolution, galaxy, history, obs, scaling, tree, units
-from .plotstyle import apply_style
+from .plotstyle import apply_style, plt
 
 
 class Checker:
@@ -583,31 +583,39 @@ def _check_uv(c, snap):
 
     print("\n[uv]")
     st = snap.part(io.PT_STAR, uv.stars_with_uv_fields())
-    lam, note = uv.star_l_lambda(snap, st)
+    lam, note = uv.star_l_nu(snap, st)
     c.check("uv: spectrum tables found from the run's /Parameters", lam is not None, note)
     if lam is None:
         return
-    # expected, from the formula: integral of L_nu dnu over 1490-1510 A, with L_nu = amp E and
-    # dnu = (eV/h) dE, is amp (eV/h) (E2^2 - E1^2)/2; divided by the 20 A band
+    # expected, from the formula, with the mock's L_nu = amp E:
+    #   point (default): L_nu at E_1500 = hc / 1500 A, i.e. amp E_1500
+    #   arepo: integral of L_nu dnu over 1490-1510 A = amp (eV/h) (E2^2 - E1^2)/2, over 20 A -> L_lambda,
+    #          then L_nu = L_lambda lambda^2 / c
     hc_ev_a = 6.62607015e-27 * 2.99792458e10 / 1.602176634e-12 * 1e8
-    e1, e2 = hc_ev_a / 1510.0, hc_ev_a / 1490.0
-    per_amp = 1.602176634e-12 / 6.62607015e-27 * (e2 ** 2 - e1 ** 2) / 2.0 / 20.0
+    e1, e2, e15 = hc_ev_a / 1510.0, hc_ev_a / 1490.0, hc_ev_a / 1500.0
+    to_lnu = 1e8 * 1.5e-5 ** 2 / 2.99792458e10
+    per_amp_point = e15
+    per_amp_arepo = 1.602176634e-12 / 6.62607015e-27 * (e2 ** 2 - e1 ** 2) / 2.0 / 20.0 * to_lnu
     u = snap.units
     age = snap.age_gyr - u.age_gyr(np.asarray(st["GFM_StellarFormationTime"], dtype=np.float64))
     p3 = np.asarray(st["IsPOPIII"], dtype=bool)
     amp = np.where(p3, _mockrun.sed_lnu(age, pop3=True, e_ev=np.ones(1))[:, 0],
                    _mockrun.sed_lnu(age, np.asarray(st["GFM_Metallicity"]), e_ev=np.ones(1))[:, 0])
-    want = np.asarray(st["GFM_InitialMass"], dtype=np.float64) * u.mass_to_msun * amp * per_amp
-    c.check("uv: L_lambda(1500) per star = initial mass x band-averaged table, Pop II and Pop III (exact for the mock)",
+    m_init = np.asarray(st["GFM_InitialMass"], dtype=np.float64) * u.mass_to_msun
+    want = m_init * amp * per_amp_point
+    c.check("uv (point, default): L_nu(1500) per star = initial mass x table L_nu at exactly 1500 A, Pop II and III",
             p3.any() and (~p3).any() and np.allclose(lam, want, rtol=1e-9),
             "max rel. diff %.2e, %d Pop III" % (np.max(np.abs(lam / want - 1)), int(p3.sum())))
+    lam_a, _ = uv.star_l_nu(snap, st, recipe="arepo")
+    c.check("uv (arepo): L_nu = (1490-1510 A average of L_lambda) lambda^2/c, x initial mass, Pop II and III",
+            lam_a is not None and np.allclose(lam_a, m_init * amp * per_amp_arepo, rtol=1e-9))
     fake = {k: np.asarray(v)[:3].copy() for k, v in st.items() if np.ndim(v) > 0}
     fake["GFM_StellarFormationTime"][:] = [-0.5, 0.0, snap.a]
-    l3, _ = uv.star_l_lambda(snap, fake)
+    l3, _ = uv.star_l_nu(snap, fake)
     tab_young = _mockrun.sed_lnu(_mockrun.SED_AGES_GYR[0], fake["GFM_Metallicity"][2:3], e_ev=np.ones(1))[0, 0]
     c.check("uv: wind particles emit nothing; a star born now gets the youngest table entry (clamped, as AREPO)",
             l3[0] == 0 and l3[1] == 0 and np.isclose(l3[2], fake["GFM_InitialMass"][2] * u.mass_to_msun * tab_young
-                                                      * per_amp, rtol=1e-9))
+                                                      * per_amp_point, rtol=1e-9))
     c.check("uv: L_nu = L_lambda lambda^2/c at 1500 A, and M_AB = 51.60 - 2.5 log L_nu (1e28 erg/s/Hz -> -18.40)",
             np.isclose(uv.l_nu(1.0), 1e8 * 1.5e-5 ** 2 / 2.99792458e10) and abs(float(uv.muv(1e28)) + 18.40) < 0.01,
             "M_UV %.3f" % float(uv.muv(1e28)))
@@ -628,12 +636,53 @@ def _check_uv(c, snap):
     uvrow = [r for r in rows if "UV" in r[0]][0]
     c.check("fig 20 UV row weights = L_nu of the same stars (no winds: mock has none)",
             len(uvrow[2]) == len(rows[0][2]) and np.all(uvrow[2] > 0))
-    saved = dict(snap.parameters)
-    snap.parameters["SpectrumTablePath"] = "/nonexistent/table.hdf5"
-    l0, why = uv.star_l_lambda(snap, st)
-    snap.parameters.clear()
-    snap.parameters.update(saved)
-    c.check("uv: a missing table gives no UV and says why", l0 is None and "not found" in why, why)
+    bars = [maps.scale_bar_length(w) for w in (2.12, 600.0, 40.0, 0.3)]
+    c.check("fig 20 scale bar: a round 1/2/5 x 10^n length, at most a quarter of the frame",
+            bars == [0.5, 100.0, 10.0, 0.05], str(bars))
+    # fig 21: UV opacity and colour rise linearly in log Sigma_UV over the shown decades
+    test_img = np.array([[0.0, 1e2, 1e4, 1e6, 1e7]])
+    rgba, lv = maps.uv_overlay_rgba(test_img, 6.0, 4.0, plt.get_cmap("inferno"))
+    c.check("fig 21 UV overlay: transparent at and below 4 dex under the top, half-opaque 2 dex under it, "
+            "opaque at and above the top; empty pixels transparent",
+            np.allclose(rgba[0, :, 3], [0.0, 0.0, 0.5, 1.0, 1.0]), str(rgba[0, :, 3]))
+    with tempfile.TemporaryDirectory() as td:
+        out21 = maps.plot_gas_uv(snap, cen, os.path.join(td, "21_gas_uv.png"), title="selftest")
+        c.check("fig 21 is drawn when the run has spectrum tables", out21 is not None and os.path.isfile(out21))
+        saved = dict(snap.parameters)
+        try:
+            # Pop II table missing: skipped, Pop II stars dark, Pop III stars still lit
+            snap.parameters["SpectrumTablePath"] = "/nonexistent/table.hdf5"
+            l_p2gone, why_p2 = uv.star_l_nu(snap, st)
+            # both missing: no UV, no fig 21
+            snap.parameters["PopIIISpectrumTablePath"] = "/nonexistent/pop3.hdf5"
+            l0, why = uv.star_l_nu(snap, st)
+            none21 = maps.plot_gas_uv(snap, cen, os.path.join(td, "21_none.png"))
+            # the run names no table: nothing without --spectra-dir, the two default files with it
+            del snap.parameters["SpectrumTablePath"], snap.parameters["PopIIISpectrumTablePath"]
+            l_noparam, why_noparam = uv.star_l_nu(snap, st)
+            for src, name in zip((saved["SpectrumTablePath"], saved["PopIIISpectrumTablePath"]), uv.DEFAULT_TABLES):
+                shutil.copy(src, os.path.join(td, name))
+            l_def, why_def = uv.star_l_nu(snap, st, spectra_dir=td)
+            os.remove(os.path.join(td, uv.DEFAULT_TABLES[1]))
+            l_def2, why_def2 = uv.star_l_nu(snap, st, spectra_dir=td)
+        finally:
+            snap.parameters.clear()
+            snap.parameters.update(saved)
+    c.check("uv: a missing Pop II table is skipped: Pop II stars get no UV, Pop III stars keep theirs, and it says so",
+            l_p2gone is not None and np.all(l_p2gone[~p3] == 0) and np.allclose(l_p2gone[p3], want[p3], rtol=1e-9)
+            and "Pop II table not found" in why_p2, why_p2)
+    c.check("uv: both tables missing gives no UV and says why", l0 is None and why.count("not found") == 2, why)
+    c.check("uv: a run naming no table has no UV without --spectra-dir", l_noparam is None and "not given" in why_noparam,
+            why_noparam)
+    c.check("uv: a run naming no table uses the two default files in --spectra-dir (same answer as the run's own tables)",
+            l_def is not None and np.allclose(l_def, want, rtol=1e-9) and why_def.count("default") == 2, why_def)
+    c.check("uv: a default file missing from --spectra-dir is skipped (Pop III dark, Pop II kept)",
+            l_def2 is not None and np.all(l_def2[p3] == 0) and np.allclose(l_def2[~p3], want[~p3], rtol=1e-9), why_def2)
+    c.check("fig 21 is not drawn without spectrum tables", none21 is None)
+    rows21 = diagnostics.figure_applicability({}, {}, [], no_uv=why)
+    st21 = [r for r in rows21 if r[0] == "21"]
+    c.check("fig 21 is 'not applicable' (not 'missing') without spectrum tables, with the reason",
+            len(st21) == 1 and st21[0][2] == "n/a" and "table not found" in st21[0][3], str(st21))
 
 
 def _check_maps(c, snap):

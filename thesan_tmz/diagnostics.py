@@ -1152,6 +1152,7 @@ FIGURE_REQUIREMENTS = (
     ("18", "bh_local_mesh", "a snapshot with gas and black holes"),
     ("19", "slr_mesh", "a snapshot of an SLR_BH build with black holes"),
     ("20", "galaxy_view", "a readable snapshot with stars or gas"),
+    ("21", "gas_uv", "a snapshot and the run's spectrum tables (SpectrumTablePath)"),
 )
 
 NOT_APPLICABLE = "n/a"
@@ -1161,7 +1162,7 @@ MISSING = "MISSING"
 
 
 def figure_applicability(summary, logs, produced, has_snapshots=True, has_history=True,
-                         has_catalog=True, skipped=(), all_bh_lowres=False):
+                         has_catalog=True, skipped=(), all_bh_lowres=False, no_uv=None):
     """Classify every figure as produced / not applicable / missing.
 
     The distinction is the point.  A run built without ``BH_BIPOLAR_INJECTION``
@@ -1173,7 +1174,8 @@ def figure_applicability(summary, logs, produced, has_snapshots=True, has_histor
 
     ``produced`` is the list of files ``run_all`` actually wrote; ``skipped`` is
     the ids the user deliberately turned off (``--no-maps``, ``--catalog-only``),
-    which must not be reported as gaps.
+    which must not be reported as gaps.  ``no_uv`` is the reason the run has no
+    stellar UV (no spectrum tables), which makes fig 21 not applicable.
 
     Returns a list of ``(id, name, status, reason)``.
     """
@@ -1213,8 +1215,10 @@ def figure_applicability(summary, logs, produced, has_snapshots=True, has_histor
                   "the snapshot instead")
         elif fid in ("01", "03") and not has_history:
             na = "needs the particle snapshot history, which was not built"
-        elif fid in ("10", "11", "12", "13", "14", "20") and not has_snapshots:
+        elif fid in ("10", "11", "12", "13", "14", "20", "21") and not has_snapshots:
             na = "needs a readable snapshot"
+        elif fid == "21" and no_uv:
+            na = "no stellar UV: %s" % no_uv
         elif fid in ("16", "18") and not has_snapshots:
             na = "needs a readable snapshot"
         elif fid == "19" and not io.has_option(cfg, "SLR_BH"):

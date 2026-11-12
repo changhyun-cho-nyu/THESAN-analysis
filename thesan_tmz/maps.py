@@ -134,10 +134,13 @@ def _spline_profile(n=401, nz=2001):
 _SPL_Q, _SPL_F = _spline_profile()
 
 
-def spline_stamp(h_px, sub=4):
+def spline_stamp(h_px, sub=None):
     """Unit-sum image of the projected cubic spline of support ``h_px`` pixels.
     Each pixel is sampled ``sub`` x ``sub`` times so kernels of a few pixels are
-    not aliased."""
+    not aliased; by default 4 x 4 below 8 px and once per pixel above (a wide
+    kernel is smooth on the pixel scale, and sub-sampling it costs sub^2)."""
+    if sub is None:
+        sub = 4 if h_px < 8.0 else 1
     r = int(np.ceil(h_px))
     off = (np.arange(sub) + 0.5) / sub - 0.5
     g = (np.arange(-r, r + 1)[:, None] + off[None, :]).ravel()
@@ -353,7 +356,7 @@ def galaxy_axis(snap, centre, radius_kpc=None, coherence_min=0.2):
 YOUNG_MYR = 10.0
 
 
-def galaxy_view_rows(snap, centre, extent_kpc, R=None, young_myr=YOUNG_MYR, spectra_dir=None):
+def galaxy_view_rows(snap, centre, extent_kpc, R=None, young_myr=YOUNG_MYR, spectra_dir=None, uv_recipe="point"):
     """The rows of fig 20 as ``(label, positions, weights, h, colour-bar label)``
     in the frame rotated by ``R``, plus notes on rows left out."""
     from . import uv
@@ -385,14 +388,16 @@ def galaxy_view_rows(snap, centre, extent_kpc, R=None, young_myr=YOUNG_MYR, spec
             else:
                 notes.append("%d stars < %g Myr: young row left out" % (int(yng.sum()), young_myr))
 
-            lam, why = uv.star_l_lambda(snap, {k: np.asarray(v)[near] for k, v in st.items()
+            lnu, why = uv.star_l_nu(snap, {k: np.asarray(v)[near] for k, v in st.items()
                                                if k not in ("count",) and np.ndim(v) > 0 and len(v) == len(near)},
-                                        spectra_dir)
-            if lam is not None and np.any(lam > 0):
-                rows.append(("intrinsic UV 1500 $\\AA$", rel, uv.l_nu(lam), h_all,
+                                        spectra_dir, recipe=uv_recipe)
+            if lnu is not None and np.any(lnu > 0):
+                rows.append(("intrinsic UV 1500 $\\AA$", rel, lnu, h_all,
                              r"$\Sigma_{\rm UV}$ [erg s$^{-1}$ Hz$^{-1}$ kpc$^{-2}$]"))
+                notes += ["UV: " + n.strip() for n in why.split(";") if "get no UV" in n]   # a skipped table
+                notes.append("UV: " + ("L_nu at 1500 A" if uv_recipe == "point" else "1490-1510 A average (AREPO)"))
             else:
-                notes.append("UV row left out: %s" % (why if lam is None else "no star emits"))
+                notes.append("UV row left out: %s" % (why if lnu is None else "no star emits"))
         else:
             notes.append("no GFM_StellarFormationTime: young and UV rows left out")
     gas = snap.part(io.PT_GAS, ["Coordinates", "Masses", "Density"])
@@ -406,7 +411,7 @@ def galaxy_view_rows(snap, centre, extent_kpc, R=None, young_myr=YOUNG_MYR, spec
 
 
 def plot_galaxy_view(snap, centre, outpath, extent_kpc=None, npix=400, title=None, axis=None, fallback_kpc=20.0,
-                     young_myr=YOUNG_MYR, spectra_dir=None):
+                     young_myr=YOUNG_MYR, spectra_dir=None, uv_recipe="point"):
     """Fig 20: the galaxy face-on (left) and edge-on (right) in the frame of its
     own spin (:func:`galaxy_axis`).  Rows: all stars (mass), stars younger than
     ``young_myr`` (mass), all stars' intrinsic UV at 1500 A (:mod:`uv`, the
@@ -431,31 +436,164 @@ def plot_galaxy_view(snap, centre, outpath, extent_kpc=None, npix=400, title=Non
     frame = ("galaxy frame, spin from %s within %.3g kpc" % (info["from"], info.get("radius_kpc", np.nan))
              if axis is not None else "simulation frame (no galaxy spin found)")
 
-    rows, notes = galaxy_view_rows(snap, centre, extent_kpc, R, young_myr, spectra_dir)
+    rows, notes = galaxy_view_rows(snap, centre, extent_kpc, R, young_myr, spectra_dir, uv_recipe)
     if not rows:
         return None
 
+    bg, fg = "black", "white"
     cmap = plt.get_cmap("viridis").copy()
-    cmap.set_bad("white")
-    cmap.set_under("white")
+    cmap.set_bad(bg)
+    cmap.set_under(bg)
     unit, f = ("pc", 1e3) if extent_kpc < 1.0 else ("kpc", 1.0)
-    fig, ax = plt.subplots(len(rows), 2, figsize=(9.0, 4.1 * len(rows)), squeeze=False)
+    ext = (-f * extent_kpc, f * extent_kpc, -f * extent_kpc, f * extent_kpc)
+    bar = scale_bar_length(2.0 * f * extent_kpc)
+    nrow = len(rows)
+    fig, ax = plt.subplots(nrow, 2, figsize=(8.0, 4.0 * nrow + 0.7), squeeze=False, facecolor=bg,
+                           gridspec_kw=dict(wspace=0.015, hspace=0.015, left=0.01, right=0.99, bottom=0.01,
+                                            top=1.0 - 0.7 / (4.0 * nrow + 0.7)))
     for i, (name, rel, w, h, cbl) in enumerate(rows):
         imgs = [project_adaptive(rel, w, h, extent_kpc, npix, depth_kpc=extent_kpc, plane=pl, normal=nm)[0]
                 for pl, nm in (((0, 1), 2), ((0, 2), 1))]
+        if unit == "pc":                                     # surface densities per pc^2 on pc-sized frames
+            imgs = [im * 1e-6 for im in imgs]
+            cbl = cbl.replace("kpc$^{-2}$", "pc$^{-2}$")
         vmax = max(np.nanpercentile(im[im > 0], 99.9) if (im > 0).any() else 1.0 for im in imgs)
         norm = LogNorm(vmin=vmax * 1e-4, vmax=vmax)
         for j, (img, vname) in enumerate(zip(imgs, ("face-on", "edge-on"))):
-            im = ax[i, j].imshow(np.where(img > 0, img, np.nan), origin="lower",
-                                 extent=(-f * extent_kpc, f * extent_kpc, -f * extent_kpc, f * extent_kpc),
-                                 norm=norm, cmap=cmap)
-            label_panel(ax[i, j], "%s, %s" % (name, vname))
-            ax[i, j].set_xlabel(unit)
-        ax[i, 0].set_ylabel(unit)
-        fig.colorbar(im, ax=ax[i, :].tolist(), label=cbl, shrink=0.9)
-    fig.suptitle("%s   z = %.2f   (%s)\nhalf-width %s%s" % (title or "", snap.z, frame, scale,
-                                                            "".join("\n" + n for n in notes)), y=0.995, fontsize=9)
-    return savefig(fig, outpath)
+            im = ax[i, j].imshow(np.where(img > 0, img, np.nan), origin="lower", extent=ext, norm=norm, cmap=cmap)
+            dark_panel(ax[i, j], "%s, %s" % (name, vname), bar, unit, ext, spin_arrow=(j == 1 and axis is not None),
+                       bg=bg, fg=fg)
+        inset_colorbar(fig, ax[i, 0], im, cbl, color=fg)
+    head = "%s   z = %.2f   (%s)\nhalf-width %s%s" % (title or "", snap.z, frame, scale, "".join("\n" + n for n in notes))
+    fig.suptitle(head, y=0.998, fontsize=8, color=fg, va="top")
+    return savefig(fig, outpath, facecolor=bg)
+
+
+def dark_panel(ax, label, bar, unit, extent, spin_arrow=False, bg="black", fg="white"):
+    """Map panel without axes: background, label (lower right), scale bar (lower
+    left) and, for edge-on views, an arrow along the spin axis (up)."""
+    ax.set_facecolor(bg)
+    ax.set_xticks([])
+    ax.set_yticks([])
+    for sp in ax.spines.values():
+        sp.set_visible(False)
+    label_panel(ax, label, loc="lower right", color=fg, stroke=True)
+    draw_scale_bar(ax, bar, unit, extent, color=fg)
+    if spin_arrow:
+        ax.annotate("", xy=(0.94, 0.80), xytext=(0.94, 0.62), xycoords="axes fraction",
+                    arrowprops=dict(arrowstyle="-|>", color=fg, lw=1.2))
+        ax.text(0.915, 0.71, r"$\vec J$", transform=ax.transAxes, color=fg, ha="right", va="center", fontsize=9)
+
+
+def uv_overlay_rgba(uv_img, top, dex, cmap):
+    """RGBA image of a UV map for drawing over the gas: colour and opacity both
+    rise linearly in log Sigma_UV from ``top - dex`` (transparent) to ``top``
+    (opaque).  Returns (rgba, log10 map with empty pixels set below the range)."""
+    with np.errstate(divide="ignore"):
+        lv = np.where(uv_img > 0, np.log10(np.where(uv_img > 0, uv_img, 1.0)), top - dex - 1.0)
+    x = np.clip((lv - (top - dex)) / dex, 0.0, 1.0)
+    rgba = cmap(x)
+    rgba[..., 3] = x
+    return rgba, lv
+
+
+def plot_gas_uv(snap, centre, outpath, extent_kpc=None, npix=400, title=None, axis=None, fallback_kpc=20.0,
+                spectra_dir=None, gas_dex=3.0, uv_dex=4.0, uv_recipe="point"):
+    """Fig 21: gas surface density in grey with the stars' intrinsic UV (1500 A)
+    on top, face-on and edge-on in the galaxy frame, same frame and kernels as
+    fig 20.  The UV colour and opacity rise with log Sigma_UV over the brightest
+    ``uv_dex`` decades (fainter UV is transparent, so the gas shows through);
+    thin contours mark each decade.  The gas shows ``gas_dex`` decades.
+    Returns None (with a printed reason) when the run has no UV."""
+    if extent_kpc is None:
+        extent_kpc, scale = galaxy_view_extent_kpc(snap, fallback_kpc)
+    else:
+        scale = "%.3g kpc (set by hand)" % extent_kpc
+    info = {"from": "given"}
+    if axis is None:
+        axis, info = galaxy_axis(snap, centre)
+    R = rotation_to_axis(axis) if axis is not None else np.eye(3)
+    frame = ("galaxy frame, spin from %s within %.3g kpc" % (info["from"], info.get("radius_kpc", np.nan))
+             if axis is not None else "simulation frame (no galaxy spin found)")
+    rows, notes = galaxy_view_rows(snap, centre, extent_kpc, R, young_myr=0.0, spectra_dir=spectra_dir,
+                                   uv_recipe=uv_recipe)
+    byname = {r[0]: r for r in rows}
+    gas = byname.get("gas")
+    uvr = next((r for r in rows if "UV" in r[0]), None)
+    if gas is None or uvr is None:
+        print("  [maps] gas + UV overlay skipped: %s" % ("no gas" if gas is None else "; ".join(
+            n for n in notes if "UV" in n) or "no UV"))
+        return None
+
+    bg, fg = "black", "white"
+    unit, f = ("pc", 1e3) if extent_kpc < 1.0 else ("kpc", 1.0)
+    per = 1e-6 if unit == "pc" else 1.0
+    area = "pc$^{-2}$" if unit == "pc" else "kpc$^{-2}$"
+    ext = (-f * extent_kpc, f * extent_kpc, -f * extent_kpc, f * extent_kpc)
+    bar = scale_bar_length(2.0 * f * extent_kpc)
+    views = (((0, 1), 2, "face-on"), ((0, 2), 1, "edge-on"))
+    gimg = [project_adaptive(gas[1], gas[2], gas[3], extent_kpc, npix, depth_kpc=extent_kpc, plane=pl, normal=nm)[0] * per
+            for pl, nm, _ in views]
+    uimg = [project_adaptive(uvr[1], uvr[2], uvr[3], extent_kpc, npix, depth_kpc=extent_kpc, plane=pl, normal=nm)[0] * per
+            for pl, nm, _ in views]
+    gtop = max(np.nanpercentile(g[g > 0], 99.9) if (g > 0).any() else 1.0 for g in gimg)
+    utop = np.log10(max(np.nanpercentile(u_[u_ > 0], 99.9) if (u_ > 0).any() else 1.0 for u_ in uimg))
+    gnorm = LogNorm(vmin=gtop * 10 ** -gas_dex, vmax=gtop)
+    grey = plt.get_cmap("gray").copy()
+    grey.set_bad(bg)
+    grey.set_under(bg)
+    warm = plt.get_cmap("inferno")
+    levels = np.arange(np.ceil(utop - uv_dex), utop + 1e-9, 1.0)
+
+    fig, ax = plt.subplots(1, 2, figsize=(8.0, 4.7), squeeze=False, facecolor=bg,
+                           gridspec_kw=dict(wspace=0.015, left=0.01, right=0.99, bottom=0.01, top=0.85))
+    for j, (g, u_, (_, _, vname)) in enumerate(zip(gimg, uimg, views)):
+        a_ = ax[0, j]
+        gi = a_.imshow(np.where(g > 0, g, np.nan), origin="lower", extent=ext, norm=gnorm, cmap=grey)
+        rgba, lv = uv_overlay_rgba(u_, utop, uv_dex, warm)
+        a_.imshow(rgba, origin="lower", extent=ext)
+        if len(levels):
+            a_.contour(lv, levels=levels, extent=ext, origin="lower", colors=[warm(0.85)], linewidths=0.35, alpha=0.7)
+        dark_panel(a_, "gas + UV, %s" % vname, bar, unit, ext, spin_arrow=(j == 1 and axis is not None), bg=bg, fg=fg)
+    inset_colorbar(fig, ax[0, 0], gi, r"$\Sigma_{\rm gas}$ [M$_\odot$ %s]" % area, color=fg)
+    um = plt.cm.ScalarMappable(norm=LogNorm(vmin=10 ** (utop - uv_dex), vmax=10 ** utop), cmap=warm)
+    inset_colorbar(fig, ax[0, 0], um, r"$\Sigma_{\rm UV,1500}$ [erg s$^{-1}$ Hz$^{-1}$ %s]" % area,
+                   color=fg, bounds=(0.05, 0.75, 0.45, 0.028))
+    head = ("%s   z = %.2f   (%s)\nhalf-width %s;  intrinsic UV, no dust;  UV contours: one per dex%s"
+            % (title or "", snap.z, frame, scale, "".join("\n" + n for n in notes if n.startswith("UV: "))))
+    fig.suptitle(head, y=0.995, fontsize=8, color=fg, va="top")
+    return savefig(fig, outpath, facecolor=bg)
+
+
+def scale_bar_length(width):
+    """A round bar length (1, 2 or 5 x 10^n) of at most a quarter of ``width``."""
+    if not width > 0:
+        return 1.0
+    top = 0.25 * width
+    p = 10.0 ** np.floor(np.log10(top))
+    return max(m * p for m in (1.0, 2.0, 5.0) if m * p <= top)
+
+
+def draw_scale_bar(ax, length, unit, extent, color="white"):
+    """Horizontal bar of ``length`` (data units) in the lower-left corner, labelled above."""
+    x0 = extent[0] + 0.06 * (extent[1] - extent[0])
+    y0 = extent[2] + 0.07 * (extent[3] - extent[2])
+    ax.plot([x0, x0 + length], [y0, y0], color=color, lw=2.0, solid_capstyle="butt")
+    ax.text(x0 + 0.5 * length, y0 + 0.02 * (extent[3] - extent[2]), "%g %s" % (length, unit),
+            color=color, ha="center", va="bottom", fontsize=9)
+
+
+def inset_colorbar(fig, ax, im, label, color="white", bounds=(0.05, 0.89, 0.45, 0.028)):
+    """Horizontal colour bar inside ``ax`` (default top left; ``bounds`` in axes
+    fraction), label and ticks above it."""
+    cax = ax.inset_axes(list(bounds))
+    cb = fig.colorbar(im, cax=cax, orientation="horizontal")
+    cb.set_label(label, color=color, fontsize=8, labelpad=2)
+    cax.xaxis.set_label_position("top")
+    cax.xaxis.set_ticks_position("top")
+    cax.tick_params(colors=color, labelsize=7, which="both")
+    cb.outline.set_edgecolor(color)
+    return cb
 
 
 def plot_projection_grid(snap, centre, outpath, extent_kpc=20.0, npix=400, axis=None, title=None, depth_kpc=None):

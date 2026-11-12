@@ -59,6 +59,9 @@ def main(argv=None):
     ap.add_argument("--extent", type=float, default=20.0, help="half-size of the projection maps, kpc")
     ap.add_argument("--galaxy-extent", type=float, default=None,
                     help="half-size of fig 20 (galaxy view), kpc; default 3 stellar half-mass radii")
+    ap.add_argument("--uv-recipe", choices=uv.RECIPES, default="point",
+                    help="stellar UV in figs 20, 21: 'point' = L_nu at exactly 1500 A (Rahul's scripts, default); "
+                         "'arepo' = 1490-1510 A average, AREPO's MRT_FOF_1500 (what Subhalo_Luminosity1500 sums)")
     ap.add_argument("--spectra-dir", default=None,
                     help="directory holding the run's spectrum tables (same file names as SpectrumTablePath / "
                          "PopIIISpectrumTablePath), when the paths in the parameters do not exist here")
@@ -283,7 +286,10 @@ def main(argv=None):
             )
             made += _try("galaxy view", maps.plot_galaxy_view, last_snap, centre, os.path.join(figdir, "20_galaxy_view.png"),
                          extent_kpc=args.galaxy_extent, fallback_kpc=args.extent, title=title,
-                         spectra_dir=args.spectra_dir)
+                         spectra_dir=args.spectra_dir, uv_recipe=args.uv_recipe)
+            made += _try("gas + UV", maps.plot_gas_uv, last_snap, centre, os.path.join(figdir, "21_gas_uv.png"),
+                         extent_kpc=args.galaxy_extent, fallback_kpc=args.extent, title=title,
+                         spectra_dir=args.spectra_dir, uv_recipe=args.uv_recipe)
             try:
                 print("  " + uv.catalogue_check(last_snap, args.spectra_dir))
             except Exception as exc:  # a diagnostic line only
@@ -313,7 +319,7 @@ def main(argv=None):
     made = [m for m in made if m]
     skipped = set()
     if args.no_maps:
-        skipped |= {"10", "11", "12", "13", "14", "20"}
+        skipped |= {"10", "11", "12", "13", "14", "20", "21"}
     if args.catalog_only:
         skipped |= {"01", "03"}
     if args.mesh_bhs <= 0:
@@ -322,6 +328,7 @@ def main(argv=None):
         summary, logs, made,
         has_snapshots=bool(snaps), has_history=hist is not None, has_catalog=chist is not None,
         skipped=skipped, all_bh_lowres=all_bh_lowres,
+        no_uv=_no_uv_reason(last_snap if snaps else None, args.spectra_dir),
     )
     # write_report echoes to stdout, so appending is enough -- printing here as
     # well would show the block twice.
@@ -336,6 +343,14 @@ def main(argv=None):
         print("  %s" % os.path.basename(m))
     print("=" * 78)
     return 0 if made else 1
+
+
+def _no_uv_reason(snap, spectra_dir):
+    """Why fig 21 cannot exist for this run (no spectrum tables), or None."""
+    if snap is None:
+        return None
+    p2, p3, note = uv.table_paths(snap, spectra_dir)
+    return None if (p2 or p3) else note
 
 
 def _try_value(fn, *a, **kw):
