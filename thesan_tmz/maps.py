@@ -1,14 +1,14 @@
 """
 Projections, phase diagrams and maps.
 
-The projections spread each element over its own size (:func:`project_adaptive`):
-a gas cell over a Gaussian of width its cell radius (3V/4pi)^(1/3), a star
-particle over half the distance to its 16th-nearest star.  Large diffuse CGM
-cells then fill the space they occupy instead of showing up as isolated
-pixel-sized squares, and the small cells of the disc keep the fine structure.
-It is not a Voronoi ray-trace (the cell is a Gaussian, not a polyhedron), but it
-conserves mass and is fast.  :func:`project` (point deposit) remains for
-callers that have no sizes.
+The projections spread each element over its own size (:func:`project_adaptive`)
+with the projected cubic-spline kernel of compact support h (the SPH convention):
+a gas cell gets h = 2.5 x its radius (3V/4pi)^(1/3), a star particle h = the
+distance to its 16th-nearest star.  Large diffuse CGM cells then fill the space
+they occupy instead of showing up as isolated pixel-sized squares, the small
+cells of the disc keep the fine structure, and nothing spreads beyond h, so
+edges stay sharp.  It is not a Voronoi ray-trace, but it conserves mass and is
+fast.  :func:`project` (point deposit) remains for callers that have no sizes.
 
 Two frames: the *jet frame* (fig 12; z along the BH's axis, for the outflow
 check) and the *galaxy frame* (fig 20; z along the galaxy's own spin, for
@@ -110,53 +110,138 @@ def project(pos_kpc, weights, extent_kpc, npix=400, depth_kpc=None, plane=(0, 1)
     return img, (-extent_kpc, extent_kpc, -extent_kpc, extent_kpc)
 
 
-def project_adaptive(pos_kpc, weights, sigma_kpc, extent_kpc, npix=400, depth_kpc=None, plane=(0, 1), normal=2,
-                     values=None, min_sigma_px=0.5, pad=0.25):
-    """Deposit with a Gaussian of each element's own width ``sigma_kpc``.
+#: cubic-spline smoothing lengths (compact support h, the Arepo/Gadget convention):
+#: a gas cell gets h = GAS_HSML_FAC x its radius (3V/4pi)^(1/3) -- about 16
+#: cells inside the kernel sphere; a star gets h = distance to its STAR_KNN-th
+#: nearest star
+GAS_HSML_FAC = 2.5
+STAR_KNN = 16
+#: width of the smoothing-length classes in log10 h (the kernel of a class is
+#: drawn at the geometric mean h of its members, so h is off by < 7 %)
+H_CLASS_DEX = 0.03
 
-    Elements are grouped into width classes a factor sqrt(2) apart; each class
-    is histogrammed and blurred once with its own sigma, then the classes are
-    summed -- O(n) plus ~20 image filters, and mass-conserving.  Elements up to
-    ``pad`` x extent outside the frame are included so their kernels spill in.
-    Same return convention as :func:`project`.  Without scipy it falls back to
-    :func:`project`.
+
+def _spline_profile(n=401, nz=2001):
+    """Line-of-sight integral of the 3D cubic spline of support 1, against the
+    projected radius q = R/h (unnormalised; the stamps are normalised)."""
+    q = np.linspace(0.0, 1.0, n)
+    z = np.linspace(0.0, 1.0, nz)
+    r = np.hypot(q[:, None], z[None, :])
+    w = np.where(r < 0.5, 1.0 - 6.0 * r ** 2 + 6.0 * r ** 3, np.where(r < 1.0, 2.0 * (1.0 - r) ** 3, 0.0))
+    return q, np.trapezoid(w, z, axis=1)
+
+
+_SPL_Q, _SPL_F = _spline_profile()
+
+
+def spline_stamp(h_px, sub=4):
+    """Unit-sum image of the projected cubic spline of support ``h_px`` pixels.
+    Each pixel is sampled ``sub`` x ``sub`` times so kernels of a few pixels are
+    not aliased."""
+    r = int(np.ceil(h_px))
+    off = (np.arange(sub) + 0.5) / sub - 0.5
+    g = (np.arange(-r, r + 1)[:, None] + off[None, :]).ravel()
+    R = np.hypot(g[:, None], g[None, :]) / h_px
+    k = np.interp(R, _SPL_Q, _SPL_F, right=0.0)
+    k = k.reshape(2 * r + 1, sub, 2 * r + 1, sub).sum(axis=(1, 3))
+    return k / k.sum()
+
+
+def project_adaptive(pos_kpc, weights, size_kpc, extent_kpc, npix=400, depth_kpc=None, plane=(0, 1), normal=2,
+                     values=None, kernel="spline", max_h_frac=1.0):
+    """Deposit each element over its own size.  Same return convention as
+    :func:`project`; without scipy it falls back to :func:`project`.
+
+    ``kernel='spline'`` (default): the projected cubic spline of compact
+    support ``size_kpc`` = h, the SPH convention -- sharp edges, nothing beyond
+    h.  Elements are grouped in classes of h ``H_CLASS_DEX`` wide; each class is
+    histogrammed and convolved once with its kernel.  Elements with h below half
+    a pixel go straight to their pixel.  h is capped at ``max_h_frac`` x the
+    frame width (a huge CGM cell cannot make the image larger).
+
+    ``kernel='gauss'``: a Gaussian of width ``size_kpc`` (the earlier scheme,
+    sqrt(2) classes, kept for comparison).
+
+    Elements outside the frame whose kernels reach into it are included, so the
+    frame is complete; mass is conserved for elements whose kernel lies inside.
     """
     if not _HAVE_SCIPY:
         return project(pos_kpc, weights, extent_kpc, npix, depth_kpc, plane, normal, values=values)
+    from scipy.signal import fftconvolve
+
     ext_out = (-extent_kpc, extent_kpc, -extent_kpc, extent_kpc)
-    E = extent_kpc * (1.0 + pad)
     px = 2.0 * extent_kpc / npix
-    nbig = int(round(2 * E / px))
     x, y = pos_kpc[:, plane[0]], pos_kpc[:, plane[1]]
-    sel = (np.abs(x) <= E) & (np.abs(y) <= E)
+    h = np.asarray(size_kpc, dtype=np.float64) * np.ones(len(x))
+    if kernel == "spline":
+        h_px = np.minimum(h / px, max_h_frac * npix)
+        reach = h_px                                          # compact support
+    elif kernel == "gauss":
+        h_px = np.maximum(h / px, 0.5)
+        reach = 3.0 * h_px                                    # gaussian_filter truncate=3
+    else:
+        raise ValueError("kernel must be 'spline' or 'gauss'")
+    sel = (np.abs(x) - reach * px <= extent_kpc) & (np.abs(y) - reach * px <= extent_kpc)
     if depth_kpc is not None:
         sel &= np.abs(pos_kpc[:, normal]) <= depth_kpc
     if not sel.any():
         return np.full((npix, npix), np.nan), ext_out
-    x, y = x[sel], y[sel]
+    x, y, h_px = x[sel], y[sel], h_px[sel]
     w = np.asarray(weights, dtype=np.float64)[sel]
     v = None if values is None else np.asarray(values, dtype=np.float64)[sel]
-    sig = np.maximum(np.asarray(sigma_kpc, dtype=np.float64)[sel] / px, min_sigma_px)
-    cls = np.floor(2.0 * np.log2(sig / min_sigma_px)).astype(int)        # sqrt(2) classes
-    bins = np.linspace(-E, E, nbig + 1)
-    den = np.zeros((nbig, nbig))
-    num = np.zeros((nbig, nbig)) if v is not None else None
-    for c in np.unique(cls):
-        m = cls == c
-        s_px = min_sigma_px * 2.0 ** ((c + 0.5) / 2.0)
-        H, _, _ = np.histogram2d(x[m], y[m], bins=[bins, bins], weights=w[m])
-        den += gaussian_filter(H.T, s_px, mode="constant", truncate=3.0)
-        if v is not None:
-            V, _, _ = np.histogram2d(x[m], y[m], bins=[bins, bins], weights=w[m] * v[m])
-            num += gaussian_filter(V.T, s_px, mode="constant", truncate=3.0)
-    o = (nbig - npix) // 2
-    den = den[o:o + npix, o:o + npix]
+
+    P = int(np.ceil(reach[sel].max())) + 1                     # padding, pixels
+    n = npix + 2 * P
+    lo = -extent_kpc - P * px
+    ix = np.floor((x - lo) / px).astype(np.int64)
+    iy = np.floor((y - lo) / px).astype(np.int64)
+    inside = (ix >= 0) & (ix < n) & (iy >= 0) & (iy < n)
+    ix, iy, h_px, w = ix[inside], iy[inside], h_px[inside], w[inside]
+    v = v[inside] if v is not None else None
+    flat = iy * n + ix                                        # row = y, column = x
+
+    def layer(m, wt):
+        return np.bincount(flat[m], weights=wt[m], minlength=n * n).reshape(n, n)
+
+    den = np.zeros((n, n))
+    num = np.zeros((n, n)) if v is not None else None
+    wv = w * v if v is not None else None
+    if kernel == "spline":
+        point = h_px < 0.5
+        if point.any():
+            den += layer(point, w)
+            if v is not None:
+                num += layer(point, wv)
+        big = ~point
+        if big.any():
+            lh = np.log10(h_px[big])
+            cls = np.floor(lh / H_CLASS_DEX).astype(np.int64)
+            idx = np.nonzero(big)[0]
+            for c in np.unique(cls):
+                m = np.zeros(len(h_px), dtype=bool)
+                m[idx[cls == c]] = True
+                st = spline_stamp(10.0 ** lh[cls == c].mean())          # geometric mean h of the class
+                den += fftconvolve(layer(m, w), st, mode="same")
+                if v is not None:
+                    num += fftconvolve(layer(m, wv), st, mode="same")
+        # FFT round-off leaves ~1e-16 x peak (of either sign) where no kernel reaches
+        den[den < 1e-12 * den.max()] = 0.0
+    else:
+        cls = np.floor(2.0 * np.log2(h_px / 0.5)).astype(int)
+        for c in np.unique(cls):
+            m = cls == c
+            s_px = 0.5 * 2.0 ** ((c + 0.5) / 2.0)
+            den += gaussian_filter(layer(m, w), s_px, mode="constant", truncate=3.0)
+            if v is not None:
+                num += gaussian_filter(layer(m, wv), s_px, mode="constant", truncate=3.0)
+
+    den = den[P:P + npix, P:P + npix]
     if v is None:
         return den / px ** 2, ext_out
-    num = num[o:o + npix, o:o + npix]
+    num = num[P:P + npix, P:P + npix]
     floor = 1e-6 * den.max() if den.size and den.max() > 0 else 0.0
     with np.errstate(invalid="ignore", divide="ignore"):
-        return np.where(den > floor, num[:, :] / den, np.nan), ext_out
+        return np.where(den > floor, num / den, np.nan), ext_out
 
 
 def gas_cell_radius_kpc(gas, units, a):
@@ -165,9 +250,15 @@ def gas_cell_radius_kpc(gas, units, a):
     return (3.0 * vol / (4.0 * np.pi)) ** (1.0 / 3.0) * units.length_to_kpc(a)
 
 
-def star_smoothing_kpc(pos_kpc, k=16):
-    """Half the distance to each star's k-th nearest star (physical kpc);
-    a fixed 0.1 kpc without scipy."""
+def gas_hsml_kpc(gas, units, a):
+    """Cubic-spline smoothing length of each gas cell: GAS_HSML_FAC x its radius."""
+    return GAS_HSML_FAC * gas_cell_radius_kpc(gas, units, a)
+
+
+def star_smoothing_kpc(pos_kpc, k=STAR_KNN):
+    """Cubic-spline smoothing length of each star: the distance to its k-th
+    nearest star (physical kpc), so dense clusters stay compact.  A fixed
+    0.1 kpc without scipy."""
     n = len(pos_kpc)
     try:
         from scipy.spatial import cKDTree
@@ -176,7 +267,40 @@ def star_smoothing_kpc(pos_kpc, k=16):
     if n < 2:
         return np.full(n, 0.1)
     d, _ = cKDTree(pos_kpc).query(pos_kpc, k=min(k + 1, n))
-    return 0.5 * np.atleast_2d(d)[:, -1]
+    return np.atleast_2d(d)[:, -1]
+
+
+def stellar_half_mass_radius_kpc(snap):
+    """3D stellar half-mass radius of the target galaxy (Subfind
+    ``SubhaloHalfmassRadType[4]``), physical kpc; None without a catalogue."""
+    try:
+        from . import catalog
+
+        cat = catalog.load(snap)
+        j = cat.target_index() if cat is not None else None
+        hr = cat.s("halfmassradtype") if j is not None else None
+        if hr is not None and np.asarray(hr)[j, io.PT_STAR] > 0:
+            return float(np.asarray(hr)[j, io.PT_STAR]) * snap.units.length_to_kpc(snap.a)
+    except Exception:
+        pass
+    return None
+
+
+#: fig 20 frame: half-width = GALAXY_VIEW_NRH stellar half-mass radii -- the
+#: same sphere the spin axis is measured in -- clamped to this range (kpc)
+GALAXY_VIEW_NRH = 3.0
+GALAXY_VIEW_RANGE_KPC = (0.1, 20.0)
+
+
+def galaxy_view_extent_kpc(snap, fallback_kpc=20.0):
+    """Half-width of the fig 20 frame and a label saying where it came from."""
+    rh = stellar_half_mass_radius_kpc(snap)
+    if not rh:
+        return fallback_kpc, "%.3g kpc (no stellar half-mass radius; --extent)" % fallback_kpc
+    lo, hi = GALAXY_VIEW_RANGE_KPC
+    e = float(np.clip(GALAXY_VIEW_NRH * rh, lo, hi))
+    tag = "" if lo < GALAXY_VIEW_NRH * rh < hi else ", clamped to %g-%g kpc" % (lo, hi)
+    return e, "%.3g kpc = %g r$_{1/2,\\star}$ (r$_{1/2,\\star}$ = %.3g kpc%s)" % (e, GALAXY_VIEW_NRH, rh, tag)
 
 
 def galaxy_axis(snap, centre, radius_kpc=None, coherence_min=0.2):
@@ -192,17 +316,8 @@ def galaxy_axis(snap, centre, radius_kpc=None, coherence_min=0.2):
     u, a = snap.units, snap.a
     L = u.length_to_kpc(a)
     if radius_kpc is None:
-        radius_kpc = 10.0
-        try:
-            from . import catalog
-
-            cat = catalog.load(snap)
-            j = cat.target_index() if cat is not None else None
-            hr = cat.s("halfmassradtype") if j is not None else None
-            if hr is not None and np.asarray(hr)[j, io.PT_STAR] > 0:
-                radius_kpc = 3.0 * float(np.asarray(hr)[j, io.PT_STAR]) * L
-        except Exception:
-            pass
+        rh = stellar_half_mass_radius_kpc(snap)
+        radius_kpc = 3.0 * rh if rh else 10.0
 
     def spin(pt, extra=None):
         d = snap.part(pt, ["Coordinates", "Masses", "Velocities"] + (extra or []))
@@ -234,12 +349,81 @@ def galaxy_axis(snap, centre, radius_kpc=None, coherence_min=0.2):
     return None, {"from": None, "radius_kpc": radius_kpc}
 
 
-def plot_galaxy_view(snap, centre, outpath, extent_kpc=20.0, npix=400, title=None, axis=None):
-    """Fig 20: the galaxy face-on and edge-on, stars (top) and gas (bottom),
-    in the frame of the galaxy's own spin (:func:`galaxy_axis`), each element
-    smoothed over its own size.  Empty or very faint pixels are white."""
+#: fig 20 young-star row: stars younger than this
+YOUNG_MYR = 10.0
+
+
+def galaxy_view_rows(snap, centre, extent_kpc, R=None, young_myr=YOUNG_MYR, spectra_dir=None):
+    """The rows of fig 20 as ``(label, positions, weights, h, colour-bar label)``
+    in the frame rotated by ``R``, plus notes on rows left out."""
+    from . import uv
+
     u, a = snap.units, snap.a
     L = u.length_to_kpc(a)
+    R = np.eye(3) if R is None else R
+    sig_star = r"$\Sigma_\star$ [M$_\odot$ kpc$^{-2}$]"
+    rows, notes = [], []          # rows: (label, positions, weights, h, colour-bar label)
+    st = snap.part(io.PT_STAR, uv.stars_with_uv_fields())
+    if st.get("count"):
+        rel = io.periodic_delta(st["Coordinates"], centre, snap.boxsize) * L
+        # the frame is a cube of half-width extent (any orientation: within
+        # sqrt(3) extent); the margin keeps the k-NN distances right at its edge
+        near = np.linalg.norm(rel, axis=1) <= 3.0 * extent_kpc
+        if "GFM_StellarFormationTime" in st:
+            tform = np.asarray(st["GFM_StellarFormationTime"], dtype=np.float64)
+            near &= tform > 0                                   # wind particles are not stars
+        rel = rel[near] @ R.T
+        mst = st["Masses"][near] * u.mass_to_msun
+        h_all = star_smoothing_kpc(rel)
+        rows.append(("all stars", rel, mst, h_all, sig_star))
+
+        if "GFM_StellarFormationTime" in st:
+            age_myr = (snap.age_gyr - u.age_gyr(tform[near])) * 1e3
+            yng = age_myr < young_myr
+            if yng.sum() > STAR_KNN:
+                rows.append(("stars < %g Myr" % young_myr, rel[yng], mst[yng], star_smoothing_kpc(rel[yng]), sig_star))
+            else:
+                notes.append("%d stars < %g Myr: young row left out" % (int(yng.sum()), young_myr))
+
+            lam, why = uv.star_l_lambda(snap, {k: np.asarray(v)[near] for k, v in st.items()
+                                               if k not in ("count",) and np.ndim(v) > 0 and len(v) == len(near)},
+                                        spectra_dir)
+            if lam is not None and np.any(lam > 0):
+                rows.append(("intrinsic UV 1500 $\\AA$", rel, uv.l_nu(lam), h_all,
+                             r"$\Sigma_{\rm UV}$ [erg s$^{-1}$ Hz$^{-1}$ kpc$^{-2}$]"))
+            else:
+                notes.append("UV row left out: %s" % (why if lam is None else "no star emits"))
+        else:
+            notes.append("no GFM_StellarFormationTime: young and UV rows left out")
+    gas = snap.part(io.PT_GAS, ["Coordinates", "Masses", "Density"])
+    if gas.get("count"):
+        rel = io.periodic_delta(gas["Coordinates"], centre, snap.boxsize) * L
+        hgas = gas_hsml_kpc(gas, u, a)
+        near = np.linalg.norm(rel, axis=1) - hgas <= np.sqrt(3.0) * extent_kpc   # kernel reaches the cube
+        rows.append(("gas", rel[near] @ R.T, gas["Masses"][near] * u.mass_to_msun, hgas[near],
+                     r"$\Sigma_{\rm gas}$ [M$_\odot$ kpc$^{-2}$]"))
+    return rows, notes
+
+
+def plot_galaxy_view(snap, centre, outpath, extent_kpc=None, npix=400, title=None, axis=None, fallback_kpc=20.0,
+                     young_myr=YOUNG_MYR, spectra_dir=None):
+    """Fig 20: the galaxy face-on (left) and edge-on (right) in the frame of its
+    own spin (:func:`galaxy_axis`).  Rows: all stars (mass), stars younger than
+    ``young_myr`` (mass), all stars' intrinsic UV at 1500 A (:mod:`uv`, the
+    run's own spectrum tables), gas (mass).  Each element is spread with the
+    cubic-spline kernel over its own size; for the young row the k-NN distance is
+    taken among the young stars only.  Empty or very faint pixels are white.
+    A row that cannot be made (no young stars, no spectrum tables) is left out
+    and the reason is given in the title.
+
+    ``extent_kpc`` is the half-width of the frame (the slab is as deep as it is
+    wide).  None (default) scales it to the galaxy: :func:`galaxy_view_extent_kpc`,
+    3 stellar half-mass radii.  At z ~ 10 that is a few hundred pc, where a
+    fixed 20 kpc would show the whole halo."""
+    if extent_kpc is None:
+        extent_kpc, scale = galaxy_view_extent_kpc(snap, fallback_kpc)
+    else:
+        scale = "%.3g kpc (set by hand)" % extent_kpc
     info = {"from": "given"}
     if axis is None:
         axis, info = galaxy_axis(snap, centre)
@@ -247,40 +431,30 @@ def plot_galaxy_view(snap, centre, outpath, extent_kpc=20.0, npix=400, title=Non
     frame = ("galaxy frame, spin from %s within %.3g kpc" % (info["from"], info.get("radius_kpc", np.nan))
              if axis is not None else "simulation frame (no galaxy spin found)")
 
-    rows = []
-    st = snap.part(io.PT_STAR, ["Coordinates", "Masses"])
-    if st.get("count"):
-        rel = io.periodic_delta(st["Coordinates"], centre, snap.boxsize) * L
-        near = np.all(np.abs(rel) <= 2.0 * extent_kpc, axis=1)
-        rel = rel[near] @ R.T
-        rows.append(("stars", rel, st["Masses"][near] * u.mass_to_msun, star_smoothing_kpc(rel)))
-    gas = snap.part(io.PT_GAS, ["Coordinates", "Masses", "Density"])
-    if gas.get("count"):
-        rel = io.periodic_delta(gas["Coordinates"], centre, snap.boxsize) * L
-        near = np.all(np.abs(rel) <= 2.0 * extent_kpc, axis=1)
-        rcell = gas_cell_radius_kpc({k: gas[k][near] for k in ("Masses", "Density")}, u, a)
-        rows.append(("gas", rel[near] @ R.T, gas["Masses"][near] * u.mass_to_msun, rcell))
+    rows, notes = galaxy_view_rows(snap, centre, extent_kpc, R, young_myr, spectra_dir)
     if not rows:
         return None
 
     cmap = plt.get_cmap("viridis").copy()
     cmap.set_bad("white")
     cmap.set_under("white")
-    fig, ax = plt.subplots(len(rows), 2, figsize=(9.0, 4.3 * len(rows)), squeeze=False)
-    for i, (name, rel, m, sig) in enumerate(rows):
-        imgs = [project_adaptive(rel, m, sig, extent_kpc, npix, depth_kpc=extent_kpc, plane=pl, normal=nm)[0]
+    unit, f = ("pc", 1e3) if extent_kpc < 1.0 else ("kpc", 1.0)
+    fig, ax = plt.subplots(len(rows), 2, figsize=(9.0, 4.1 * len(rows)), squeeze=False)
+    for i, (name, rel, w, h, cbl) in enumerate(rows):
+        imgs = [project_adaptive(rel, w, h, extent_kpc, npix, depth_kpc=extent_kpc, plane=pl, normal=nm)[0]
                 for pl, nm in (((0, 1), 2), ((0, 2), 1))]
         vmax = max(np.nanpercentile(im[im > 0], 99.9) if (im > 0).any() else 1.0 for im in imgs)
         norm = LogNorm(vmin=vmax * 1e-4, vmax=vmax)
         for j, (img, vname) in enumerate(zip(imgs, ("face-on", "edge-on"))):
             im = ax[i, j].imshow(np.where(img > 0, img, np.nan), origin="lower",
-                                 extent=(-extent_kpc, extent_kpc, -extent_kpc, extent_kpc), norm=norm, cmap=cmap)
+                                 extent=(-f * extent_kpc, f * extent_kpc, -f * extent_kpc, f * extent_kpc),
+                                 norm=norm, cmap=cmap)
             label_panel(ax[i, j], "%s, %s" % (name, vname))
-            ax[i, j].set_xlabel("kpc")
-        ax[i, 0].set_ylabel("kpc")
-        fig.colorbar(im, ax=ax[i, :].tolist(), label=r"$\Sigma_{\rm %s}$ [M$_\odot$ kpc$^{-2}$]" % (r"\star" if name == "stars" else "gas"),
-                     shrink=0.9)
-    fig.suptitle("%s   z = %.2f   (%s)" % (title or "", snap.z, frame), y=0.995, fontsize=9)
+            ax[i, j].set_xlabel(unit)
+        ax[i, 0].set_ylabel(unit)
+        fig.colorbar(im, ax=ax[i, :].tolist(), label=cbl, shrink=0.9)
+    fig.suptitle("%s   z = %.2f   (%s)\nhalf-width %s%s" % (title or "", snap.z, frame, scale,
+                                                            "".join("\n" + n for n in notes)), y=0.995, fontsize=9)
     return savefig(fig, outpath)
 
 
@@ -299,13 +473,14 @@ def plot_projection_grid(snap, centre, outpath, extent_kpc=20.0, npix=400, axis=
 
     rel = io.periodic_delta(gas["Coordinates"], centre, snap.boxsize) * L
     r = np.linalg.norm(rel, axis=1)
-    near = r <= extent_kpc * 2.0
-    rel = rel[near]
+    hgas = gas_hsml_kpc(gas, u, snap.a)
+    inner = r <= extent_kpc * 2.0
+    near = r - hgas <= extent_kpc * 2.0          # every cell whose kernel reaches the 2 x extent sphere
+    vc = np.average(gas["Velocities"][inner], axis=0, weights=gas["Masses"][inner])
+    rel, hgas = rel[near], hgas[near]
     m = gas["Masses"][near] * u.mass_to_msun
-    rcell = gas_cell_radius_kpc({k: gas[k][near] for k in ("Masses", "Density")}, u, snap.a)
     T = u.temperature(gas["InternalEnergy"][near], gas["ElectronAbundance"][near] if "ElectronAbundance" in gas else None)
 
-    vc = np.average(gas["Velocities"][near], axis=0, weights=gas["Masses"][near])
     # peculiar velocity plus the Hubble flow H(a) r (rel is in physical kpc)
     dv = (gas["Velocities"][near] - vc) * u.peculiar_velocity_to_kms(snap.a) + u.hubble_kms_per_kpc(snap.a) * rel
     with np.errstate(invalid="ignore", divide="ignore"):
@@ -327,7 +502,7 @@ def plot_projection_grid(snap, centre, outpath, extent_kpc=20.0, npix=400, axis=
     ]
 
     for row, (vname, plane, normal) in enumerate(views):
-        img, ext = project_adaptive(rel, m, rcell, extent_kpc, npix, depth_kpc, plane, normal)
+        img, ext = project_adaptive(rel, m, hgas, extent_kpc, npix, depth_kpc, plane, normal)
         a = ax[row, 0]
         finite = img[np.isfinite(img) & (img > 0)]
         vmin = np.percentile(finite, 5) if finite.size else 1.0
@@ -336,14 +511,14 @@ def plot_projection_grid(snap, centre, outpath, extent_kpc=20.0, npix=400, axis=
         fig.colorbar(im, ax=a, label=r"$\Sigma_{\rm gas}$ [M$_\odot$ kpc$^{-2}$]")
         label_panel(a, "column density", color="w", stroke=True)
 
-        img, ext = project_adaptive(rel, m, rcell, extent_kpc, npix, depth_kpc, plane, normal,
+        img, ext = project_adaptive(rel, m, hgas, extent_kpc, npix, depth_kpc, plane, normal,
                                     values=np.log10(np.maximum(T, 1.0)))
         a = ax[row, 1]
         im = a.imshow(img, origin="lower", extent=ext, cmap="inferno", vmin=3.0, vmax=7.5)
         fig.colorbar(im, ax=a, label=r"$\langle\log_{10}T\rangle$ [K]")
         label_panel(a, "temperature", color="w", stroke=True)
 
-        img, ext = project_adaptive(rel, m, rcell, extent_kpc, npix, depth_kpc, plane, normal, values=vr)
+        img, ext = project_adaptive(rel, m, hgas, extent_kpc, npix, depth_kpc, plane, normal, values=vr)
         a = ax[row, 2]
         lim = np.nanpercentile(np.abs(img), 98) if np.isfinite(img).any() else 100.0
         im = a.imshow(img, origin="lower", extent=ext, cmap="RdBu_r", vmin=-lim, vmax=lim)

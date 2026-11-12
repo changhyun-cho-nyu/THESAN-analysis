@@ -340,6 +340,7 @@ def run(workdir=None, keep=False, make_figures=True):
     _check_lowres(c, s_, tmp)
     _check_eddington_cap(c, s_.units)
     _check_maps(c, s_)
+    _check_uv(c, s_)
     c.check("history: cache round-trips", _cache_roundtrip_ok(out, hist))
     lam_expect = hist["bh_mdot_msun_per_yr"] / hist["_units"].eddington_rate_msun_per_yr(hist["bh_mass_msun"], _mockrun.EPS_R)
     c.check("history: Eddington ratio uses the run's eps (0.2), not 0.1",
@@ -574,6 +575,67 @@ def _check_eddington_cap(c, units):
             and "no Eddington cap" in r_free)
 
 
+def _check_uv(c, snap):
+    """Per-star intrinsic 1500 A luminosity against the mock's analytic spectra."""
+    import h5py
+
+    from . import uv
+
+    print("\n[uv]")
+    st = snap.part(io.PT_STAR, uv.stars_with_uv_fields())
+    lam, note = uv.star_l_lambda(snap, st)
+    c.check("uv: spectrum tables found from the run's /Parameters", lam is not None, note)
+    if lam is None:
+        return
+    # expected, from the formula: integral of L_nu dnu over 1490-1510 A, with L_nu = amp E and
+    # dnu = (eV/h) dE, is amp (eV/h) (E2^2 - E1^2)/2; divided by the 20 A band
+    hc_ev_a = 6.62607015e-27 * 2.99792458e10 / 1.602176634e-12 * 1e8
+    e1, e2 = hc_ev_a / 1510.0, hc_ev_a / 1490.0
+    per_amp = 1.602176634e-12 / 6.62607015e-27 * (e2 ** 2 - e1 ** 2) / 2.0 / 20.0
+    u = snap.units
+    age = snap.age_gyr - u.age_gyr(np.asarray(st["GFM_StellarFormationTime"], dtype=np.float64))
+    p3 = np.asarray(st["IsPOPIII"], dtype=bool)
+    amp = np.where(p3, _mockrun.sed_lnu(age, pop3=True, e_ev=np.ones(1))[:, 0],
+                   _mockrun.sed_lnu(age, np.asarray(st["GFM_Metallicity"]), e_ev=np.ones(1))[:, 0])
+    want = np.asarray(st["GFM_InitialMass"], dtype=np.float64) * u.mass_to_msun * amp * per_amp
+    c.check("uv: L_lambda(1500) per star = initial mass x band-averaged table, Pop II and Pop III (exact for the mock)",
+            p3.any() and (~p3).any() and np.allclose(lam, want, rtol=1e-9),
+            "max rel. diff %.2e, %d Pop III" % (np.max(np.abs(lam / want - 1)), int(p3.sum())))
+    fake = {k: np.asarray(v)[:3].copy() for k, v in st.items() if np.ndim(v) > 0}
+    fake["GFM_StellarFormationTime"][:] = [-0.5, 0.0, snap.a]
+    l3, _ = uv.star_l_lambda(snap, fake)
+    tab_young = _mockrun.sed_lnu(_mockrun.SED_AGES_GYR[0], fake["GFM_Metallicity"][2:3], e_ev=np.ones(1))[0, 0]
+    c.check("uv: wind particles emit nothing; a star born now gets the youngest table entry (clamped, as AREPO)",
+            l3[0] == 0 and l3[1] == 0 and np.isclose(l3[2], fake["GFM_InitialMass"][2] * u.mass_to_msun * tab_young
+                                                      * per_amp, rtol=1e-9))
+    c.check("uv: L_nu = L_lambda lambda^2/c at 1500 A, and M_AB = 51.60 - 2.5 log L_nu (1e28 erg/s/Hz -> -18.40)",
+            np.isclose(uv.l_nu(1.0), 1e8 * 1.5e-5 ** 2 / 2.99792458e10) and abs(float(uv.muv(1e28)) + 18.40) < 0.01,
+            "M_UV %.3f" % float(uv.muv(1e28)))
+    from . import galaxy, maps
+
+    cen, _ = galaxy.auto_centre(snap)
+    rows, notes = maps.galaxy_view_rows(snap, cen, 1.0)
+    rows_y, _ = maps.galaxy_view_rows(snap, cen, 1.0, young_myr=1e5)
+    names = [r[0] for r in rows]
+    young = [r for r in rows_y if r[0].startswith("stars <")]
+    allst = rows_y[0]
+    c.check("fig 20 rows: all stars, UV, gas; the mock's few young stars are left out with a note",
+            names[0] == "all stars" and any("UV" in n for n in names) and names[-1] == "gas"
+            and not any(n.startswith("stars <") for n in names) and any("young row left out" in n for n in notes),
+            "%s | %s" % (names, notes))
+    c.check("fig 20 young row: with every star 'young' it holds all of them, with its own k-NN h (= the all-star h)",
+            len(young) == 1 and len(young[0][2]) == len(allst[2]) and np.allclose(young[0][3], allst[3]))
+    uvrow = [r for r in rows if "UV" in r[0]][0]
+    c.check("fig 20 UV row weights = L_nu of the same stars (no winds: mock has none)",
+            len(uvrow[2]) == len(rows[0][2]) and np.all(uvrow[2] > 0))
+    saved = dict(snap.parameters)
+    snap.parameters["SpectrumTablePath"] = "/nonexistent/table.hdf5"
+    l0, why = uv.star_l_lambda(snap, st)
+    snap.parameters.clear()
+    snap.parameters.update(saved)
+    c.check("uv: a missing table gives no UV and says why", l0 is None and "not found" in why, why)
+
+
 def _check_maps(c, snap):
     """Adaptive projection, galaxy spin axis, softening."""
     from . import galaxy, maps
@@ -590,11 +652,18 @@ def _check_maps(c, snap):
     px = 40.0 / 200
     c.check("maps: adaptive projection conserves mass (elements well inside the frame)",
             np.isclose(img.sum() * px ** 2, w.sum(), rtol=1e-6), "%g vs %g" % (img.sum() * px ** 2, w.sum()))
-    one, _ = maps.project_adaptive(np.zeros((1, 3)), [1.0], [2.0], 20.0, npix=200)
+    # one element of h = 3 kpc at a pixel centre: nothing beyond h (compact support), and its projected
+    # second moment <R^2> = 2/3 <r^2> of the 3D cubic spline, <r^2> = 0.225 h^2 (integrated here, independently)
+    q = np.linspace(0.0, 1.0, 100001)
+    W = np.where(q < 0.5, 1 - 6 * q ** 2 + 6 * q ** 3, 2 * (1 - q) ** 3)
+    r2_3d = np.trapezoid(q ** 4 * W, q) / np.trapezoid(q ** 2 * W, q)
+    one, _ = maps.project_adaptive(np.array([[0.5 * px, 0.5 * px, 0.0]]), [1.0], [3.0], 20.0, npix=200)
     yy, xx = np.mgrid[0:200, 0:200]
-    r2 = ((xx - 99.5) ** 2 + (yy - 99.5) ** 2) * px ** 2
-    sd = np.sqrt(np.sum(one * r2) / np.sum(one) / 2.0)
-    c.check("maps: one element is spread as a Gaussian of about its own width (2 kpc)", 1.6 < sd < 2.5, "sigma %.2f" % sd)
+    rr = np.hypot(xx - 100, yy - 100) * px
+    R2 = np.sum(one * rr ** 2) / np.sum(one)
+    c.check("maps: cubic spline: nothing beyond h, projected <R^2> = 2/3 <r^2> of the 3D kernel",
+            one[rr > 3.0 + px].sum() < 1e-10 * one.sum() and np.isclose(R2, 2.0 / 3.0 * r2_3d * 9.0 + px ** 2 / 6.0, rtol=0.01),
+            "<R^2> %.4f vs %.4f kpc^2 (+ pixel px^2/6)" % (R2, 2.0 / 3.0 * r2_3d * 9.0 + px ** 2 / 6.0))
     vals, _ = maps.project_adaptive(pos, w, sig, 20.0, npix=200, values=np.full(3000, 7.0))
     c.check("maps: a constant field stays constant in the weighted mean", np.allclose(vals[np.isfinite(vals)], 7.0))
     cen, _ = galaxy.auto_centre(snap)
@@ -602,6 +671,11 @@ def _check_maps(c, snap):
     ang = np.degrees(np.arccos(min(1.0, abs(float(ax_ @ _mockrun.TRUE_AXIS))))) if ax_ is not None else 180.0
     c.check("maps: galaxy spin = the mock disc axis (stars do not rotate, so from the cold gas)",
             ang < 3.0 and info["from"] == "cold gas", "%.2f deg from %s" % (ang, info["from"]))
+    rh = maps.stellar_half_mass_radius_kpc(snap)
+    e20, why = maps.galaxy_view_extent_kpc(snap)
+    lo, hi = maps.GALAXY_VIEW_RANGE_KPC
+    c.check("maps: fig 20 half-width = 3 stellar half-mass radii (clamped), not the fixed --extent",
+            rh is not None and np.isclose(e20, np.clip(3.0 * rh, lo, hi)), "r_half %s -> %s" % (rh, why))
     snap.parameters.update(SofteningTypeOfPartType1=1, SofteningTypeOfPartType4=2, SofteningComovingType1=1.0,
                            SofteningMaxPhysType1=0.5, SofteningComovingType2=0.5, SofteningMaxPhysType2=0.1)
     e = maps.softening_kpc(snap)

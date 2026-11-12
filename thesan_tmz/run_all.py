@@ -22,7 +22,7 @@ import traceback
 import numpy as np
 
 from . import arepo_io as io
-from . import bh_logs, bh_population, catalog, diagnostics, evolution, galaxy, history, local_mesh, lowres, maps, scaling, slr_mesh, tree as tree_mod
+from . import bh_logs, bh_population, catalog, diagnostics, evolution, galaxy, history, local_mesh, lowres, maps, scaling, slr_mesh, tree as tree_mod, uv
 from .plotstyle import apply_style
 
 
@@ -57,6 +57,11 @@ def main(argv=None):
     ap.add_argument("--centre", default="bh,subhalo,group,potmin,densest", help="centring strategies to try, in order")
     ap.add_argument("--stdout", default=None, help="stdout log(s) for the injection counters; comma-separated for a restart chain")
     ap.add_argument("--extent", type=float, default=20.0, help="half-size of the projection maps, kpc")
+    ap.add_argument("--galaxy-extent", type=float, default=None,
+                    help="half-size of fig 20 (galaxy view), kpc; default 3 stellar half-mass radii")
+    ap.add_argument("--spectra-dir", default=None,
+                    help="directory holding the run's spectrum tables (same file names as SpectrumTablePath / "
+                         "PopIIISpectrumTablePath), when the paths in the parameters do not exist here")
     ap.add_argument("--no-maps", action="store_true", help="skip the (slow) projection figures")
     ap.add_argument("--mesh-bhs", type=int, default=10,
                     help="3D page of the local Voronoi cell of this many most massive BHs (0 = skip; needs scipy and plotly)")
@@ -277,7 +282,12 @@ def main(argv=None):
                 title=title,
             )
             made += _try("galaxy view", maps.plot_galaxy_view, last_snap, centre, os.path.join(figdir, "20_galaxy_view.png"),
-                         extent_kpc=args.extent, title=title)
+                         extent_kpc=args.galaxy_extent, fallback_kpc=args.extent, title=title,
+                         spectra_dir=args.spectra_dir)
+            try:
+                print("  " + uv.catalogue_check(last_snap, args.spectra_dir))
+            except Exception as exc:  # a diagnostic line only
+                print("  UV check failed: %s" % exc)
             made += _try(
                 "collimation",
                 diagnostics.plot_collimation,

@@ -39,7 +39,8 @@ Module map
 ``evolution``   time-evolution figures
 ``scaling``     scaling-relation figures
 ``diagnostics`` model-specific health checks unique to this branch
-``maps``        projections, phase diagrams, jet-frame views
+``maps``        projections, phase diagrams, jet-frame views, galaxy view
+``uv``          intrinsic 1500 A luminosity per star from the run's spectrum tables
 ``plotstyle``   shared matplotlib style and helpers
 ``run_all``     driver that produces the whole figure set
 """
@@ -54,6 +55,7 @@ __all__ = [
     "bh_logs",
     "bh_population",
     "lowres",
+    "uv",
     "local_mesh",
     "slr_mesh",
     "galaxy",

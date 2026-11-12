@@ -51,7 +51,7 @@ pip install -r requirements.txt
 | package | needed for |
 |---|---|
 | `numpy`, `h5py`, `matplotlib` | everything (required) |
-| `scipy` | smooth projection maps (each cell spread over its own size); the 3D local-mesh page |
+| `scipy` | smooth projection maps (each cell and star spread with the cubic-spline kernel over its own size); the 3D local-mesh page |
 | `plotly` | the 3D local-mesh page (`18_bh_local_mesh.html`) |
 
 Python 3.8 or newer. On a cluster, `module load python scipy-stack` usually provides
@@ -127,7 +127,7 @@ projection maps.
 | `17_bh_tracks.png` | the history of every BH from `blackhole_details` |
 | `18_bh_local_mesh.html` | interactive 3D view of each BH's cell in its local Voronoi mesh (open in a browser) |
 | `19_slr_mesh.png` | runs with `SLR_BH`: how well the mesh is refined around the target galaxy's most massive BH — cell size and mass vs distance against the refinement target, the fraction of cells on target, and slices through the actual Voronoi cells |
-| `20_galaxy_view.png` | the galaxy **face-on and edge-on** in its own spin frame, stars and gas, 40 kpc across (`--extent`) |
+| `20_galaxy_view.png` | the galaxy **face-on and edge-on** in its own spin frame; rows: all stars, stars < 10 Myr, intrinsic UV 1500 Å (the run's own spectrum tables, as AREPO's `MRT_FOF_1500`), gas; 3 stellar half-mass radii each side (a few hundred pc at z ~ 10; `--galaxy-extent` to set it). A row that cannot be made is left out and the title says why |
 | `bh_table.txt` | one row per BH in the last snapshot |
 | `report.txt` | the run's configuration, checks, and **which figures apply** |
 
@@ -157,7 +157,9 @@ the snapshots keep every BH.
 | `--stdout run.out` | the run's stdout file(s), comma-separated for restarts; enables fig 06 and the energy ledger |
 | `--bh-id ID` | follow this BH instead of the default one |
 | `--radii 1,2,5,10,30` | aperture radii in physical kpc |
-| `--extent 20` | half-size of the maps, kpc |
+| `--extent 20` | half-size of the maps, kpc (figs 12, 13) |
+| `--galaxy-extent` | half-size of fig 20, kpc; default 3 stellar half-mass radii, clamped to 0.1-20 kpc |
+| `--spectra-dir DIR` | where the run's spectrum tables are, if the `SpectrumTablePath` / `PopIIISpectrumTablePath` in its parameters do not exist on this machine (same file names) |
 | `--mesh-bhs 10` | 3D page for this many most massive BHs (`0` skips it) |
 | `--show-lowres-bhs` | keep BHs that sit in low-res gas in the per-BH figures (hidden by default) |
 | `--total-mass` | use the total bound mass of each subhalo instead of the mass within twice the half-mass radius |

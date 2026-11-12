@@ -113,6 +113,41 @@ def logs_written(config):
 EPS_R = 0.2
 
 
+#: synthetic spectrum tables (written next to the mock run, named in its
+#: /Parameters): L_nu = SED_A (age/1 Myr)^SED_AGE_SLOPE (Z/0.01)^SED_Z_SLOPE E[eV]
+#: erg/s/Hz per Msun, Pop III the same with SED_POP3_BOOST and no Z.  A power law
+#: in age and Z and linear in E, so the band average and the log-bilinear
+#: interpolation are exact and the self-test can compare to the formula.
+SED_A, SED_AGE_SLOPE, SED_Z_SLOPE, SED_POP3_BOOST = 1.0e19, -0.8, -0.2, 5.0
+SED_AGES_GYR = np.logspace(-4, 1, 26)
+SED_Z = np.logspace(-4, np.log10(0.04), 5)
+SED_E = np.logspace(0, 2, 200)
+
+
+def sed_lnu(age_gyr, z=None, e_ev=SED_E, pop3=False):
+    age = np.clip(np.asarray(age_gyr, dtype=np.float64), SED_AGES_GYR[0], SED_AGES_GYR[-1])
+    amp = SED_A * (age / 1e-3) ** SED_AGE_SLOPE
+    if pop3:
+        amp = amp * SED_POP3_BOOST
+    else:
+        amp = amp * (np.clip(z, SED_Z[0], SED_Z[-1]) / 0.01) ** SED_Z_SLOPE
+    return np.asarray(amp)[..., None] * e_ev
+
+
+def write_sed_tables(directory):
+    os.makedirs(directory, exist_ok=True)
+    p2, p3 = os.path.join(directory, "mock_spectra_pop2.hdf5"), os.path.join(directory, "mock_spectra_pop3.hdf5")
+    with h5py.File(p2, "w") as f:
+        f["Energy"], f["age"], f["metallicity"] = SED_E, SED_AGES_GYR, SED_Z
+        f["N_age"], f["N_metallicity"], f["Number_of_freq"] = len(SED_AGES_GYR), len(SED_Z), len(SED_E)
+        f["Lnu"] = np.stack([sed_lnu(SED_AGES_GYR, zz) for zz in SED_Z]).ravel()
+    with h5py.File(p3, "w") as f:
+        f["Energy"], f["age"] = SED_E, SED_AGES_GYR
+        f["N_age"], f["Number_of_freq"] = len(SED_AGES_GYR), len(SED_E)
+        f["Lnu"] = sed_lnu(SED_AGES_GYR, pop3=True)
+    return p2, p3
+
+
 def _mdot_edd_code(bh_mass_code, h, UL, UV):
     """BH_MdotEddington as blackhole_mdot_eddington() writes it, in code units."""
     G, mp, c, sigma_T = 6.6738e-8, 1.67262178e-24, 2.99792458e10, 6.65245873e-25
@@ -133,6 +168,7 @@ def build(root, nsnap=12, seed=42, scenario="local_both"):
     OUT = os.path.join(ROOT, "output")
     shutil.rmtree(ROOT, ignore_errors=True)
     os.makedirs(OUT)
+    sed_pop2, sed_pop3 = write_sed_tables(os.path.join(ROOT, "spectra"))
     logdirs = ["blackhole_details", "blackhole_mergers"]
     if logs["bipolar_log"]:
         logdirs.append("blackhole_bipolar")
@@ -241,6 +277,7 @@ def build(root, nsnap=12, seed=42, scenario="local_both"):
                 GFM_StellarFormationTime=rng.uniform(avals[0] * 0.8, a, nstar),
                 GFM_InitialMass=np.full(nstar, 1e-5),
                 GFM_Metallicity=np.full(nstar, 0.001 * growth),
+                IsPOPIII=(np.arange(nstar) % 20 == 0).astype(np.int32),
                 Potential=-rng.exponential(2e4, nstar),
                 ParticleIDs=np.arange(50_000, 50_000 + nstar, dtype=np.uint64),
             ),
@@ -290,7 +327,7 @@ def build(root, nsnap=12, seed=42, scenario="local_both"):
                     UnitLength_in_cm=UL, UnitMass_in_g=UM, UnitVelocity_in_cm_per_s=UV,
                     HubbleParam=h, Omega0=Om, OmegaLambda=OL, OmegaBaryon=Ob, ComovingIntegrationOn=1, BoxSize=BOX,
                     BlackHoleRadiativeEfficiency=EPS_R, BlackHoleFeedbackFactor=eps_f, BlackHoleAccretionFactor=1.0,
-                    BlackHoleEddingtonFactor=1.0,
+                    BlackHoleEddingtonFactor=1.0, SpectrumTablePath=sed_pop2, PopIIISpectrumTablePath=sed_pop3,
                 ).items():
                     pg.attrs[kk] = vv
                 if cfg["bipolar_params"]:
