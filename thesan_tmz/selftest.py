@@ -342,6 +342,7 @@ def run(workdir=None, keep=False, make_figures=True):
     _check_maps(c, s_)
     _check_uv(c, s_)
     _check_kinematics(c, s_)
+    _check_map_snap(c, root, tmp)
     c.check("history: cache round-trips", _cache_roundtrip_ok(out, hist))
     lam_expect = hist["bh_mdot_msun_per_yr"] / hist["_units"].eddington_rate_msun_per_yr(hist["bh_mass_msun"], _mockrun.EPS_R)
     c.check("history: Eddington ratio uses the run's eps (0.2), not 0.1",
@@ -684,6 +685,43 @@ def _check_uv(c, snap):
     st21 = [r for r in rows21 if r[0] == "21"]
     c.check("fig 21 is 'not applicable' (not 'missing') without spectrum tables, with the reason",
             len(st21) == 1 and st21[0][2] == "n/a" and "table not found" in st21[0][3], str(st21))
+
+
+def _check_map_snap(c, root, tmp):
+    """run_all --map-snap: the maps and the kinematics use the chosen snapshot; a missing one skips them."""
+    import contextlib
+    import io as _io
+
+    from . import kinematics as kin, maps, run_all
+
+    print("\n[--map-snap]")
+    seen = {}
+    orig = (maps.plot_galaxy_view, maps.plot_phase_diagram, kin.analyse)
+
+    def rec(name, fn):
+        def wrapped(snap, *a, **kw):
+            seen[name] = snap.num
+            return fn(snap, *a, **kw)
+        return wrapped
+
+    maps.plot_galaxy_view = rec("galaxy_view", orig[0])
+    maps.plot_phase_diagram = rec("phase_diagram", orig[1])
+    kin.analyse = rec("kinematics", orig[2])
+    buf = _io.StringIO()
+    try:
+        with contextlib.redirect_stdout(buf):
+            run_all.main([root, "--figdir", os.path.join(tmp, "fig_mapsnap"), "--map-snap", "3", "--mesh-bhs", "0"])
+            seen_good = dict(seen)
+            seen.clear()
+            run_all.main([root, "--figdir", os.path.join(tmp, "fig_mapsnap_bad"), "--map-snap", "999", "--mesh-bhs", "0"])
+    finally:
+        maps.plot_galaxy_view, maps.plot_phase_diagram, kin.analyse = orig
+    log = buf.getvalue()
+    c.check("--map-snap 3: figs 10, 20 and the kinematics are made from snapshot 3, not the last",
+            seen_good == {"galaxy_view": 3, "phase_diagram": 3, "kinematics": 3}, str(seen_good))
+    c.check("--map-snap 999 (no such snapshot): maps skipped with a message, listed as skipped, not missing",
+            not seen and "no such snapshot" in log and "22 kinematics          skipped" in log
+            and "missing" in log and " 0 missing" in log, str(seen))
 
 
 def _check_kinematics(c, snap):

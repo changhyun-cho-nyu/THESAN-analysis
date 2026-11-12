@@ -155,6 +155,7 @@ the snapshots keep every BH.
 | `--figdir DIR` | where to write the figures |
 | `--snapshots 0-40` or `0,10,20` | only these snapshots |
 | `--catalog-only` | use the group catalogues only (fast; no apertures, gas phases or kinematics) |
+| `--map-snap N` | make the maps and the kinematics (figs 10–14, 20–22) from snapshot N instead of the last one. File names stay the same, so add `--figdir` to keep both sets. A snapshot without particle data skips them with a message |
 | `--no-maps` | skip the projection figures (10–14, 20, 21), which are slow |
 | `--stdout run.out` | the run's stdout file(s), comma-separated for restarts; enables fig 06 and the energy ledger |
 | `--bh-id ID` | follow this BH instead of the default one |

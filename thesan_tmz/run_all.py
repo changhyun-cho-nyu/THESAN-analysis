@@ -65,6 +65,9 @@ def main(argv=None):
     ap.add_argument("--spectra-dir", default=None,
                     help="directory holding the run's spectrum tables (same file names as SpectrumTablePath / "
                          "PopIIISpectrumTablePath), when the paths in the parameters do not exist here")
+    ap.add_argument("--map-snap", type=int, default=None,
+                    help="make the maps and the kinematics (figs 10-14, 20-22) from this snapshot number instead "
+                         "of the last one; the file names stay the same, so use --figdir to keep both")
     ap.add_argument("--no-maps", action="store_true", help="skip the (slow) projection figures")
     ap.add_argument("--mesh-bhs", type=int, default=10,
                     help="3D page of the local Voronoi cell of this many most massive BHs (0 = skip; needs scipy and plotly)")
@@ -110,6 +113,20 @@ def main(argv=None):
             reports.append("MODEL CONFIGURATION\n" + diagnostics.format_model_summary(summary))
         except Exception as exc:
             print("  [run_all] could not read the last snapshot: %s" % exc)
+    map_snap = last_snap
+    if args.map_snap is not None and snaps:
+        if args.map_snap not in snaps:
+            print("  [run_all] --map-snap %d: no such snapshot with particle data (have %s) -- maps skipped"
+                  % (args.map_snap, _ranges(snaps)))
+            map_snap = None
+        else:
+            try:
+                map_snap = io.Snapshot(out_dir, args.map_snap)
+                print("  [run_all] maps and kinematics from snapshot %d (z = %.2f), not the last (%d)"
+                      % (args.map_snap, map_snap.z, snaps[-1]))
+            except Exception as exc:
+                print("  [run_all] could not read snapshot %d: %s -- maps skipped" % (args.map_snap, exc))
+                map_snap = None
     else:
         print("  [run_all] no snapshots found -- log-only analysis")
 
@@ -264,40 +281,40 @@ def main(argv=None):
                      bh_id=args.bh_id, title=title, hide_lowres=hide_lowres)
 
     # -- 6. maps and the collimation test -----------------------------------
-    if last_snap is not None and not args.no_maps:
+    if map_snap is not None and not args.no_maps:
         print("\n--- maps and collimation ---")
-        centre, cinfo = galaxy.auto_centre(last_snap, prefer=centre_prefer, bh_id=args.bh_id)
+        centre, cinfo = galaxy.auto_centre(map_snap, prefer=centre_prefer, bh_id=args.bh_id)
         if centre is None:
             print("  [run_all] no centre in the last snapshot (%s) -- skipping maps" % cinfo.get("reason"))
         else:
             print("  centred by '%s' %s" % (cinfo.get("method"), {k: v for k, v in cinfo.items() if k != "method"}))
-            axis = _axis_for_snapshot(last_snap, centre, logs, bh_id=cinfo.get("bh_id"))
-            made += _try("phase diagram", maps.plot_phase_diagram, last_snap, centre, os.path.join(figdir, "10_phase_diagram.png"), radius_kpc=max(radii), title=title)
-            made += _try("radial profiles", maps.plot_radial_profiles, last_snap, centre, os.path.join(figdir, "11_radial_profiles.png"), title=title)
+            axis = _axis_for_snapshot(map_snap, centre, logs, bh_id=cinfo.get("bh_id"))
+            made += _try("phase diagram", maps.plot_phase_diagram, map_snap, centre, os.path.join(figdir, "10_phase_diagram.png"), radius_kpc=max(radii), title=title)
+            made += _try("radial profiles", maps.plot_radial_profiles, map_snap, centre, os.path.join(figdir, "11_radial_profiles.png"), title=title)
             made += _try(
                 "projections",
                 maps.plot_projection_grid,
-                last_snap,
+                map_snap,
                 centre,
                 os.path.join(figdir, "12_projections.png"),
                 extent_kpc=args.extent,
                 axis=axis,
                 title=title,
             )
-            made += _try("galaxy view", maps.plot_galaxy_view, last_snap, centre, os.path.join(figdir, "20_galaxy_view.png"),
+            made += _try("galaxy view", maps.plot_galaxy_view, map_snap, centre, os.path.join(figdir, "20_galaxy_view.png"),
                          extent_kpc=args.galaxy_extent, fallback_kpc=args.extent, title=title,
                          spectra_dir=args.spectra_dir, uv_recipe=args.uv_recipe)
-            made += _try("gas + UV", maps.plot_gas_uv, last_snap, centre, os.path.join(figdir, "21_gas_uv.png"),
+            made += _try("gas + UV", maps.plot_gas_uv, map_snap, centre, os.path.join(figdir, "21_gas_uv.png"),
                          extent_kpc=args.galaxy_extent, fallback_kpc=args.extent, title=title,
                          spectra_dir=args.spectra_dir, uv_recipe=args.uv_recipe)
             try:
-                print("  " + uv.catalogue_check(last_snap, args.spectra_dir))
+                print("  " + uv.catalogue_check(map_snap, args.spectra_dir))
             except Exception as exc:  # a diagnostic line only
                 print("  UV check failed: %s" % exc)
             made += _try(
                 "collimation",
                 diagnostics.plot_collimation,
-                last_snap,
+                map_snap,
                 centre,
                 axis,
                 os.path.join(figdir, "13_collimation.png"),
@@ -308,7 +325,7 @@ def main(argv=None):
             made += _try(
                 "stellar ages",
                 evolution.plot_stellar_age_distribution,
-                last_snap,
+                map_snap,
                 centre,
                 os.path.join(figdir, "14_stellar_ages.png"),
                 radius_kpc=max(radii),
@@ -316,15 +333,15 @@ def main(argv=None):
             )
 
     # -- 6b. kinematics of the galaxy (fig 22) -------------------------------
-    no_kin = "needs a readable snapshot" if last_snap is None else None
-    if last_snap is not None:
+    no_kin = "needs a readable snapshot" if map_snap is None else None
+    if map_snap is not None:
         print("\n--- kinematics ---")
-        kcen, kinfo = galaxy.auto_centre(last_snap, prefer=centre_prefer, bh_id=args.bh_id)
+        kcen, kinfo = galaxy.auto_centre(map_snap, prefer=centre_prefer, bh_id=args.bh_id)
         if kcen is None:
             no_kin = "no galaxy centre (%s)" % kinfo.get("reason")
         else:
             try:
-                ktab, knote = kinematics.analyse(last_snap, kcen)
+                ktab, knote = kinematics.analyse(map_snap, kcen)
             except Exception as exc:
                 ktab, knote = None, "failed: %s: %s" % (type(exc).__name__, exc)
             print("  " + knote)
@@ -333,13 +350,15 @@ def main(argv=None):
                 no_kin = knote
             else:
                 made += _try("kinematics", kinematics.plot, ktab, os.path.join(figdir, "22_kinematics.png"),
-                             title=title, z=last_snap.z)
+                             title=title, z=map_snap.z)
 
     # -- 7. what applies to this build, and what is genuinely missing -------
     made = [m for m in made if m]
     skipped = set()
     if args.no_maps:
         skipped |= {"10", "11", "12", "13", "14", "20", "21"}
+    if args.map_snap is not None and map_snap is None:
+        skipped |= {"10", "11", "12", "13", "14", "20", "21", "22"}
     if args.catalog_only:
         skipped |= {"01", "03"}
     if args.mesh_bhs <= 0:
@@ -348,7 +367,7 @@ def main(argv=None):
         summary, logs, made,
         has_snapshots=bool(snaps), has_history=hist is not None, has_catalog=chist is not None,
         skipped=skipped, all_bh_lowres=all_bh_lowres,
-        no_uv=_no_uv_reason(last_snap if snaps else None, args.spectra_dir), no_kinematics=no_kin,
+        no_uv=_no_uv_reason(map_snap if snaps else None, args.spectra_dir), no_kinematics=no_kin,
     )
     # write_report echoes to stdout, so appending is enough -- printing here as
     # well would show the block twice.
@@ -379,6 +398,19 @@ def _try_value(fn, *a, **kw):
     except Exception as exc:
         print("  [run_all] %s: %s" % (getattr(fn, "__name__", fn), exc))
         return None
+
+
+def _ranges(nums):
+    """[0,1,2,3,5,10,15] -> '0-3, 5, 10, 15' (for messages)."""
+    nums = sorted(int(n) for n in nums)
+    out, start = [], None
+    for i, n in enumerate(nums):
+        if start is None:
+            start = n
+        if i + 1 == len(nums) or nums[i + 1] != n + 1:
+            out.append(str(start) if start == n else "%d-%d" % (start, n))
+            start = None
+    return ", ".join(out)
 
 
 def _parse_nums(spec):
