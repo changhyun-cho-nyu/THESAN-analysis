@@ -26,6 +26,15 @@ Andrews & Martini (2013), ApJ 765, 140              -- mass-metallicity (direct 
 McGaugh (2012), AJ 143, 40                          -- baryonic Tully-Fisher
 Bryan & Norman (1998), ApJ 495, 80                  -- virial overdensity
 Maiolino et al. (2024), Nature 627, 59              -- JWST over-massive BHs (indicative)
+Baggen et al. (2023), ApJL 955, L12                 -- compact massive candidates z ~ 7-9 (sizes)
+Baggen et al. (2024), ApJL 977, L13                 -- Balmer-break compact galaxies z = 6.7-8.4
+Tacchella et al. (2023), arXiv:2302.07234           -- GN-z11 size and mass
+Messa et al. (2025), arXiv:2507.18705               -- Cosmic Gems star clusters, z = 9.625
+Hopkins et al. (2010), MNRAS 401, L19               -- maximum stellar surface density
+Curti et al. (2024), A&A 684, A75                   -- JADES gas MZR, z = 3-10
+Nakajima et al. (2023), ApJS 269, 33                -- JWST gas MZR, z = 4-10
+Chemerynska et al. (2024), arXiv:2407.17110         -- low-mass gas MZR, z = 6-8
+Kirby et al. (2013), ApJ 779, 102                   -- Local Group dwarfs, stellar <[Fe/H]>-M*
 """
 
 from __future__ import annotations
@@ -310,3 +319,100 @@ def scatter_band(y, dex):
     """(lower, upper) envelopes for a relation with ``dex`` of log scatter."""
     y = np.asarray(y, dtype=np.float64)
     return y * 10.0 ** (-dex), y * 10.0 ** (+dex)
+
+
+# ---------------------------------------------------------------------------
+# Compact high-redshift systems (JWST), for the stellar density profile (fig 23)
+# ---------------------------------------------------------------------------
+# Values checked against each paper's table on 2026-11-11 (arXiv HTML versions;
+# see the work log).  Sizes are as published plus b/a, so the caller can
+# circularise: r_e,c = r_e sqrt(b/a).
+
+#: Salpeter -> Chabrier stellar mass (dex), as used for Baggen+23 (masses from Labbe+23, Salpeter)
+SALPETER_TO_CHABRIER_DEX = -0.24
+
+#: Baggen+23 Table 1 (arXiv:2305.17162): ID, z_phot, log M* (Salpeter, from Labbe+23),
+#: adopted major-axis r_e [pc] (+err, -err), b/a (WebbPSF fit).  F200W.
+BAGGEN23 = [
+    (7274, 7.77, 9.87, 273, 18, 22, 0.5), (11184, 7.32, 10.18, 216, 18, 32, 0.7),
+    (14924, 8.83, 10.02, 108, 26, 10, 0.7), (16624, 8.52, 9.30, 311, 85, 54, 0.7),
+    (21834, 8.54, 9.61, 137, 51, 60, 0.1), (25666, 7.93, 9.52, 86, 20, 12, 0.8),
+    (28984, 7.54, 9.57, 111, 12, 17, 0.5), (37888, 6.51, 9.23, 88, 40, 27, 0.3),
+    (38094, 7.48, 10.89, 82, 8, 15, 0.6),
+]
+
+#: Baggen+24 Table 1 (arXiv:2408.07745): RUBIES ID, z_spec, log M* medium / min (max AGN) /
+#: max (no AGN) (Chabrier, from Wang et al.), major-axis r_e [pc], b/a.  F200W.
+BAGGEN24 = [
+    (49140, 6.68, 9.93, 9.50, 11.2, 123, 0.58),
+    (55604, 6.98, 9.79, 8.99, 11.1, 54, 0.78),
+    (966323, 8.35, 9.84, 8.72, 10.6, 86, 0.73),
+]
+
+#: GN-z11, Tacchella+23 (arXiv:2302.07234): z = 10.60; point source + extended size
+#: 64 +- 20 pc (the extended part alone is ~200 pc); Prospector mass 10^9.1 (+0.3, -0.4),
+#: Chabrier, no AGN light.  (Size and mass read from the paper's later sections via a summary.)
+GNZ11 = dict(z=10.60, r_e=64.0, r_e_err=20.0, logm=9.1, logm_hi=0.3, logm_lo=0.4)
+
+#: Messa+25 Table 1 (arXiv:2507.18705), Cosmic Gems clusters, z = 9.625, glafic lens model,
+#: Kroupa IMF: ID, log M*, R_eff [pc], R_eff is an upper limit
+MESSA25 = [
+    ("A.1", 6.79, 1.1, False), ("B.1", 6.35, 1.1, False), ("C.1", 6.02, 0.9, True), ("D.1", 5.89, 0.7, False),
+    ("E.1", 5.97, 0.4, False), ("A.2", 6.49, 1.7, False), ("B.2", 6.47, 1.3, True), ("C.2+D.2", 6.60, 1.9, False),
+]
+
+#: Hopkins+10 (MNRAS 401, L19) abstract: Sigma_max ~ 1e11 Msun/kpc^2 = 1e5 Msun/pc^2
+HOPKINS10_SIGMA_MAX_PC2 = 1.0e5
+
+
+# ---------------------------------------------------------------------------
+# High-redshift gas-phase MZR (12 + log O/H) and the Local Group iron-mass
+# relation, for figs 05 (MZR), 24, 25.  Checked against the papers on
+# 2026-11-11 (see the work log); entries marked "summary" were read from a
+# summary of the paper's later sections, not verbatim text.
+# ---------------------------------------------------------------------------
+
+#: Curti+24 (arXiv:2304.08516) Table 3 (summary): 12+log(O/H) = Zm8 + slope log(M*/1e8),
+#: Chabrier; the 3-10 row is also in the abstract (verbatim).  Key: redshift bin.
+CURTI24_FITS = {(3, 10): (7.72, 0.17), (3, 6): (7.75, 0.18), (6, 10): (7.65, 0.11)}
+#: Curti+24 Table 2 (summary), z = 6-10 medians: (log M*, 12+log O/H)
+CURTI24_MEDIANS_Z6_10 = [(7.35, 7.64), (8.10, 7.67), (8.76, 7.73)]
+#: mass range of the Curti+24 sample (log M*)
+CURTI24_LOGM_RANGE = (6.0, 10.0)
+
+#: Nakajima+23 (arXiv:2301.12825) eq. 1 (summary): 12+log(O/H) = 8.24 + 0.25 log(M*/1e10), z = 4-10,
+#: Chabrier; mass range log M* 7.5-9 (verbatim intro; 9.5 only in the summary)
+NAKAJIMA23 = (8.24, 0.25, 10.0)
+NAKAJIMA23_LOGM_RANGE = (7.5, 9.0)
+
+#: Chemerynska+24 (arXiv:2407.17110) abstract (verbatim), z = 6-8, M* = 1e6-1e8:
+#: 12+log(O/H) = a x^2 + b x + c, x = log M*
+CHEMERYNSKA24 = (-0.076, 1.61, -0.26)
+CHEMERYNSKA24_LOGM_RANGE = (6.0, 8.0)
+
+#: Kirby+13 (arXiv:1310.0814) eq. 4 (verbatim): <[Fe/H]> = -1.69 + 0.30 log(M*/1e6), rms 0.17;
+#: <[Fe/H]> is the error-weighted mean of individual stars; fitted from log M* = 3.68 (Coma Ber)
+#: to 5e8 Msun (NGC 205), z = 0 Local Group dwarfs; solar log eps(Fe) = 7.52 in the paper
+KIRBY13 = (-1.69, 0.30, 6.0, 0.17)
+KIRBY13_LOGM_RANGE = (3.68, np.log10(5e8))
+
+
+def curti24_mzr(logm, zbin=(6, 10)):
+    zm8, slope = CURTI24_FITS[zbin]
+    return zm8 + slope * (np.asarray(logm) - 8.0)
+
+
+def nakajima23_mzr(logm):
+    z10, slope, pivot = NAKAJIMA23
+    return z10 + slope * (np.asarray(logm) - pivot)
+
+
+def chemerynska24_mzr(logm):
+    a, b, c = CHEMERYNSKA24
+    x = np.asarray(logm)
+    return a * x ** 2 + b * x + c
+
+
+def kirby13_feh(logm):
+    a, b, pivot, _ = KIRBY13
+    return a + b * (np.asarray(logm) - pivot)

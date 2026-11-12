@@ -313,12 +313,23 @@ def plot_main_sequence(hist, units, outpath, pop=None, title=None):
 
 
 def plot_mzr(hist, units, outpath, pop=None, title=None):
-    """Mass -- metallicity, gas and stars, against Tremonti+04 / Andrews+13.
+    """Mass -- metallicity.
 
-    The conversion from GFM's mass-fraction metallicity to 12+log(O/H) assumes
-    a solar O/Z ratio, which is optimistic for young alpha-enhanced systems --
-    read the offset, not the absolute normalisation.
+    (a) the target galaxy's gas track over time against the z = 0 relations
+        (Tremonti+04 / Andrews+13).  The history has only the total Z, so
+        12+log(O/H) assumes a solar O/Z ratio -- read the offset, not the
+        absolute normalisation.
+    (b) the clean-central population of the last snapshot, 12+log(O/H) from the
+        oxygen mass fraction within R_1/2 (mass- and SFR-weighted), against the
+        JWST relations (Curti+24, Nakajima+23, Chemerynska+24); see
+        :func:`metallicity.draw_gas_mzr`.  ``pop['_metal']`` carries that
+        sample; without it (or without the O fractions) the old panel is drawn:
+        every galaxy's total Z, converted with the solar O/Z.
+    (c) dust-to-gas against O/H (:func:`metallicity.draw_dgr`), when the
+        catalogue has the dust fields.
     """
+    from . import metallicity
+
     R = float(np.max(hist["_radii_kpc"]))
     ms = history.key(hist, "mstar", R)
     Zg = history.key(hist, "Zgas", R)
@@ -326,33 +337,49 @@ def plot_mzr(hist, units, outpath, pop=None, title=None):
         print("  [scaling] no GFM_Metallicity -- skipping MZR")
         return None
 
-    fig, ax = plt.subplots(1, 2, figsize=(10.5, 4.2))
+    mp = pop.get("_metal") if pop else None
+    fig, ax = plt.subplots(1, 3, figsize=(16.0, 4.4))
     grid = np.logspace(7.0, 11.5, 200)
 
-    for a in ax:
-        a.plot(grid, obs.tremonti04_mzr(grid), color=PALETTE["vermillion"], lw=1.3, label="Tremonti+04 (strong line)")
-        a.plot(grid, obs.andrews_martini13_mzr(grid), color=PALETTE["blue"], lw=1.3, ls="--", label=r"Andrews & Martini 13 ($T_e$)")
-        a.axhline(obs.OH_SOLAR, color=PALETTE["grey"], ls=":", lw=0.9)
-        a.text(grid[5], obs.OH_SOLAR + 0.03, "solar", fontsize=7, color=PALETTE["grey"])
-        a.set_xscale("log")
-        a.set_xlabel(r"$M_\star$ [M$_\odot$]")
-        a.set_ylabel(r"$12+\log({\rm O/H})$")
-        a.set_ylim(6.5, 9.5)
+    a = ax[0]
+    a.plot(grid, obs.tremonti04_mzr(grid), color=PALETTE["vermillion"], lw=1.3, label="Tremonti+04 (strong line)")
+    a.plot(grid, obs.andrews_martini13_mzr(grid), color=PALETTE["blue"], lw=1.3, ls="--", label=r"Andrews & Martini 13 ($T_e$)")
+    a.axhline(obs.OH_SOLAR, color=PALETTE["grey"], ls=":", lw=0.9)
+    a.text(grid[5], obs.OH_SOLAR + 0.03, "solar", fontsize=7, color=PALETTE["grey"])
+    a.set_xscale("log")
+    a.set_xlabel(r"$M_\star$ [M$_\odot$]")
+    a.set_ylabel(r"$12+\log({\rm O/H})$ (total Z, solar O/Z)")
+    a.set_ylim(6.5, 9.5)
+    sc = _track_colour(fig, a, ms, obs.logOH_from_Zmass(Zg), hist["z"], label="this galaxy (gas)")
+    fig.colorbar(sc, ax=a, label="redshift")
+    a.set_yscale("linear")
+    a.legend(loc="lower right", fontsize=7)
+    label_panel(a, "(a) track over time, $z$ = 0 relations")
 
-    sc = _track_colour(fig, ax[0], ms, obs.logOH_from_Zmass(Zg), hist["z"], label="central (gas)")
-    fig.colorbar(sc, ax=ax[0], label="redshift")
-    ax[0].set_yscale("linear")
-    ax[0].legend(loc="lower right", fontsize=7)
-    label_panel(ax[0], "(a) gas-phase MZR track")
+    b = ax[1]
+    if mp is not None and metallicity.draw_gas_mzr(b, mp):
+        b.legend(loc="lower right", fontsize=6.5)
+        label_panel(b, r"(b) clean centrals at $z=%.2f$, JWST relations" % pop["z"])
+    else:
+        if pop is not None and pop["count"] and "Zgas" in pop:
+            m = pop["Zgas"] > 0
+            b.scatter(pop["mstar"][m], obs.logOH_from_Zmass(pop["Zgas"][m]), s=14, color=C["gas"], alpha=0.7, label="gas")
+        if pop is not None and pop["count"] and "Zstar" in pop:
+            m = pop["Zstar"] > 0
+            b.scatter(pop["mstar"][m], obs.logOH_from_Zmass(pop["Zstar"][m]), s=14, color=C["stars"], alpha=0.7, marker="s", label="stars")
+        b.set_xscale("log")
+        b.set_xlabel(r"$M_\star$ [M$_\odot$]")
+        b.set_ylabel(r"$12+\log({\rm O/H})$ (total Z, solar O/Z)")
+        b.legend(loc="lower right", fontsize=7)
+        label_panel(b, r"(b) population at $z=%.2f$ (no O fractions in the catalogue)" % (pop["z"] if pop else np.nan))
 
-    if pop is not None and pop["count"] and "Zgas" in pop:
-        m = pop["Zgas"] > 0
-        ax[1].scatter(pop["mstar"][m], obs.logOH_from_Zmass(pop["Zgas"][m]), s=14, color=C["gas"], alpha=0.7, label="gas")
-    if pop is not None and pop["count"] and "Zstar" in pop:
-        m = pop["Zstar"] > 0
-        ax[1].scatter(pop["mstar"][m], obs.logOH_from_Zmass(pop["Zstar"][m]), s=14, color=C["stars"], alpha=0.7, marker="s", label="stars")
-    ax[1].legend(loc="lower right", fontsize=7)
-    label_panel(ax[1], r"(b) population at $z=%.2f$" % (pop["z"] if pop else np.nan))
+    d = ax[2]
+    if mp is not None and metallicity.draw_dgr(d, mp):
+        d.legend(loc="lower right", fontsize=6.5)
+        label_panel(d, "(c) dust-to-gas vs O/H")
+    else:
+        d.text(0.5, 0.5, "no dust fields in the catalogue", transform=d.transAxes, ha="center", color="0.5")
+        label_panel(d, "(c) dust-to-gas vs O/H")
 
     if title:
         fig.suptitle(title, y=1.02)

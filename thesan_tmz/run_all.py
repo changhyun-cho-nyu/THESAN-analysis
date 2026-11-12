@@ -22,7 +22,7 @@ import traceback
 import numpy as np
 
 from . import arepo_io as io
-from . import bh_logs, bh_population, catalog, contamination, diagnostics, evolution, galaxy, history, kinematics, local_mesh, lowres, maps, scaling, slr_mesh, tree as tree_mod, uv
+from . import bh_logs, bh_population, catalog, contamination, density, diagnostics, metallicity, evolution, galaxy, history, kinematics, local_mesh, lowres, maps, scaling, slr_mesh, tree as tree_mod, uv
 from .plotstyle import apply_style
 
 
@@ -67,7 +67,7 @@ def main(argv=None):
                          "PopIIISpectrumTablePath, or the two THESAN-Zoom defaults); default %s when it exists"
                          % uv.DEFAULT_SPECTRA_DIR)
     ap.add_argument("--map-snap", type=int, default=None,
-                    help="make the maps and the kinematics (figs 10-14, 20-22) from this snapshot number instead "
+                    help="make the maps, kinematics, density and metallicity (figs 10-14, 20-25) from this snapshot instead "
                          "of the last one; the file names stay the same, so use --figdir to keep both")
     ap.add_argument("--no-maps", action="store_true", help="skip the (slow) projection figures")
     ap.add_argument("--mesh-bhs", type=int, default=10,
@@ -228,6 +228,8 @@ def main(argv=None):
     if last_snap is not None:
         pop = _try_value(scaling.population_from_catalog, last_snap,
                          use_inrad=not args.total_mass, min_highres=0.9)
+        if pop is not None:
+            pop["_metal"] = _try_value(metallicity.sample, last_snap)     # clean centrals for the MZR panels
     # The scaling relations need exactly what Subfind measures, so they work
     # from the catalogue history when there is no particle history.
     shist = hist if hist is not None else chist
@@ -338,11 +340,12 @@ def main(argv=None):
 
     # -- 6b. kinematics of the galaxy (fig 22) -------------------------------
     no_kin = "needs a readable snapshot" if map_snap is None else None
+    no_den = no_kin
     if map_snap is not None:
         print("\n--- kinematics ---")
         kcen, kinfo = galaxy.auto_centre(map_snap, prefer=centre_prefer, bh_id=args.bh_id)
         if kcen is None:
-            no_kin = "no galaxy centre (%s)" % kinfo.get("reason")
+            no_kin = no_den = "no galaxy centre (%s)" % kinfo.get("reason")
         else:
             try:
                 ktab, knote = kinematics.analyse(map_snap, kcen)
@@ -355,6 +358,32 @@ def main(argv=None):
             else:
                 made += _try("kinematics", kinematics.plot, ktab, os.path.join(figdir, "22_kinematics.png"),
                              title=title, z=map_snap.z)
+            # fig 23: stellar density profiles (same bound stars and centre)
+            try:
+                dtab, dnote = density.analyse(map_snap, kcen)
+            except Exception as exc:
+                dtab, dnote = None, "failed: %s: %s" % (type(exc).__name__, exc)
+            reports.append(density.report_lines(dtab, dnote))
+            if dtab is None:
+                no_den = dnote
+            else:
+                made += _try("density profile", density.plot, dtab, os.path.join(figdir, "23_density_profile.png"),
+                             title=title, z=map_snap.z)
+
+    # -- 6b'. metallicity of the galaxy and the clean centrals (figs 24, 25) -
+    no_met = {} if map_snap is not None else {"24": "needs a readable snapshot", "25": "needs a readable snapshot"}
+    if map_snap is not None:
+        print("\n--- metallicity ---")
+        mpop = _try_value(metallicity.sample, map_snap)
+        fe = _try_value(metallicity.iron, map_snap, mpop) if mpop is not None else None
+        reports.append(metallicity.report_lines(mpop, fe))
+        no_met = metallicity.unavailable(mpop, fe)
+        if "24" not in no_met:
+            made += _try("stellar MZR", metallicity.plot_stellar_mzr, mpop, os.path.join(figdir, "24_stellar_mzr.png"),
+                         title=title, z=map_snap.z)
+        if "25" not in no_met:
+            made += _try("iron", metallicity.plot_iron, mpop, fe, os.path.join(figdir, "25_iron.png"),
+                         title=title, z=map_snap.z)
 
     # -- 6c. low-res contamination around the target (report only) --------
     if map_snap is not None:
@@ -371,7 +400,7 @@ def main(argv=None):
     if args.no_maps:
         skipped |= {"10", "11", "12", "13", "14", "20", "21"}
     if args.map_snap is not None and map_snap is None:
-        skipped |= {"10", "11", "12", "13", "14", "20", "21", "22"}
+        skipped |= {"10", "11", "12", "13", "14", "20", "21", "22", "23", "24", "25"}
     if args.catalog_only:
         skipped |= {"01", "03"}
     if args.mesh_bhs <= 0:
@@ -380,7 +409,7 @@ def main(argv=None):
         summary, logs, made,
         has_snapshots=bool(snaps), has_history=hist is not None, has_catalog=chist is not None,
         skipped=skipped, all_bh_lowres=all_bh_lowres,
-        no_uv=_no_uv_reason(map_snap if snaps else None, args.spectra_dir), no_kinematics=no_kin,
+        no_uv=_no_uv_reason(map_snap if snaps else None, args.spectra_dir), no_kinematics=no_kin, no_density=no_den, no_metallicity=no_met,
     )
     # write_report echoes to stdout, so appending is enough -- printing here as
     # well would show the block twice.

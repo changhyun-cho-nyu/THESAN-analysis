@@ -205,3 +205,45 @@ def analyse(snap, lowres_types=LOWRES_TYPES):
         lines.append("  f_low(<r) first exceeds %.0e at r = %s" % (thr, ("%.3f R200c" % rr) if rr is not None
                                                                    else "> %g R200c" % RMAX_R200))
     return "\n".join(lines)
+
+
+def clean_flags(snap, cat=None, lowres_types=LOWRES_TYPES, min_star_particles=10):
+    """"Clean central" flag for every subhalo (Rahul's ``k25_figures.clean_centrals``):
+    the subhalo is its group's central, the group has R200c > 0, no low-res
+    particle (``lowres_types``) lies within R200c of ``GroupPos``, and the
+    subhalo has at least ``min_star_particles`` star particles.
+
+    Returns (bool array over all subhalos or None, note)."""
+    from . import catalog
+
+    cat = cat if cat is not None else catalog.load(snap)
+    if cat is None or not cat.n_sub:
+        return None, "no group catalogue"
+    gn, r200, gpos = cat.group_of(), cat.g("r200c"), cat.g("pos")
+    if gn is None or r200 is None or gpos is None:
+        return None, "catalogue lacks SubhaloGroupNr / Group_R_Crit200 / GroupPos"
+    gn = np.asarray(gn)
+    r200 = np.asarray(r200, dtype=np.float64)
+    gpos = np.asarray(gpos, dtype=np.float64)
+    ntot = np.asarray(snap.header["NumPart_Total"], dtype=np.int64)
+    lr = [d["Coordinates"] for t in lowres_types if t < len(ntot) and ntot[t] > 0
+          for _, d in iter_type(snap.files, t, fields=("Coordinates",))]
+    dmin = np.full(len(r200), np.inf)
+    if lr:
+        pts = np.concatenate(lr).astype(np.float64)
+        box = snap.boxsize
+        try:
+            from scipy.spatial import cKDTree
+
+            tree = cKDTree(np.mod(pts, box), boxsize=box) if box else cKDTree(pts)
+            dmin, _ = tree.query(np.mod(gpos, box) if box else gpos, k=1)
+        except ImportError:
+            dmin = np.array([radius(pts, c, box).min() for c in gpos])
+    clean_group = (r200 > 0) & (dmin > r200)
+    ok = cat.is_central() & clean_group[np.clip(gn, 0, len(r200) - 1)] & (gn >= 0)
+    lt = cat.s("lentype")
+    if lt is not None:
+        ok &= np.asarray(lt)[:, io.PT_STAR] >= min_star_particles
+    n_c = int(cat.is_central().sum())
+    return ok, ("%d of %d centrals clean (no type %s particle within R200c, >= %d star particles)"
+                % (int(ok.sum()), n_c, "/".join(str(t) for t in lowres_types), min_star_particles))

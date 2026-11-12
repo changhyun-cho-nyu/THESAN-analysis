@@ -358,6 +358,8 @@ def _run(workdir=None, keep=False, make_figures=True):
     _check_map_snap(c, root, tmp)
     _check_overview_no_bh(c, hist, hist["_units"], tmp)
     _check_contamination(c, s_, tmp)
+    _check_density(c, tmp)
+    _check_metallicity(c, tmp)
     c.check("history: cache round-trips", _cache_roundtrip_ok(out, hist))
     lam_expect = hist["bh_mdot_msun_per_yr"] / hist["_units"].eddington_rate_msun_per_yr(hist["bh_mass_msun"], _mockrun.EPS_R)
     c.check("history: Eddington ratio uses the run's eps (0.2), not 0.1",
@@ -748,6 +750,112 @@ def _check_map_snap(c, root, tmp):
             and "missing" in log and " 0 missing" in log, str(seen))
 
 
+def _met_reasons(snap):
+    from . import metallicity as met
+
+    mp = met.sample(snap)
+    return met.unavailable(mp, met.iron(snap, mp) if mp is not None else None)
+
+
+def _check_metallicity(c, tmp):
+    """Abundance formulae, per-galaxy stellar [Fe/H], and figs 05(b,c), 24, 25 on a synthetic population."""
+    from . import metallicity as met
+    from .plotstyle import plt as plt_
+
+    print("\n[metallicity]")
+    # a gas with O/H at the solar 12 + log(O/H) = 8.69 and solar Fe: X_O/X_H = 16 x 10^(8.69-12)
+    f = np.zeros((1, 10))
+    f[0, 0] = 0.7
+    f[0, 4] = 0.7 * 16.0 * 10 ** (8.69 - 12)
+    f[0, 8] = 0.7 * 55.845 * 10 ** (7.50 - 12)
+    c.check("metallicity: 12+log(O/H) = 8.69 and [Fe/H] = [O/H] = 0 for solar mass fractions (Asplund+09)",
+            np.isclose(met.log_oh(f)[0], 8.69) and np.isclose(met.x_h(f, 8, 55.845, 7.50)[0], 0.0)
+            and np.isclose(met.x_h(f, 4, 16.0, 8.69)[0], 0.0))
+    # stars: subhalo 0 = 2 solar-Fe stars + 1 wind; subhalo 1 = 2 stars without Fe (pristine)
+    metals = np.vstack([f, f, f, np.zeros((2, 10)) + np.eye(10)[0] * 0.75])
+    mass = np.array([1.0, 3.0, 5.0, 1.0, 1.0])
+    tform = np.array([0.5, 0.5, -0.1, 0.5, 0.5])
+    mean, fp = met.star_feh_means(metals, mass, tform, np.array([0, 3]), np.array([3, 2]), np.array([0, 1]))
+    c.check("metallicity: <[Fe/H]>* is the mass-weighted mean over non-wind stars; Fe-free stars sit at the floor -5",
+            np.allclose(mean, [0.0, -5.0]) and np.allclose(fp, [0.0, 1.0]), "%s %s" % (mean, fp))
+    c.check("metallicity: Z_sun follows the build (0.0127, 0.01359 with GMC_SF_FB)",
+            met.solar_z(type("S", (), {"config": {}})()) == 0.0127
+            and met.solar_z(type("S", (), {"config": {"GMC_SF_FB": ""}})()) == 0.01359)
+
+    rng = np.random.default_rng(4)
+    n = 60
+    ms = 10 ** rng.uniform(5, 10, n)
+    fr = np.tile(f, (n, 1)) * 10 ** rng.uniform(-2, 0, n)[:, None]
+    fr[:, 0] = 0.75
+    pop = dict(count=n, mstar=ms, mstar_total=ms * 1.3, sfr=rng.uniform(0, 1, n), subhalo_index=np.arange(n),
+               clean=np.arange(n) > 0, target=0, zsun=0.0127, gasmetfrac_halfrad=fr, gasmetfrac_sfrw=fr * 1.1,
+               starmetfrac=fr * 0.5, zstar_halfrad=0.0127 * 10 ** rng.uniform(-6, 0, n),
+               zgas_halfrad=0.0127 * 10 ** rng.uniform(-3, 0, n), dgr_halfrad=10 ** rng.uniform(-6, -2, n),
+               dgr_sfr=10 ** rng.uniform(-6, -2, n), z=10.0, clean_note="synthetic")
+    nst = 400
+    fe = dict(note=[], feh_star=rng.uniform(-5, 0, n), fpris=rng.uniform(0, 1, n),
+              feh_star_cat=met.x_h(pop["starmetfrac"], 8, 55.845, 7.50), feh_gas=met.x_h(fr, 8, 55.845, 7.50),
+              oh_gas_x=met.x_h(fr, 4, 16.0, 8.69), target_m=np.ones(nst), target_feh=rng.uniform(-4, 0.5, nst),
+              target_ofe=rng.uniform(-0.3, 1.0, nst))
+    fig, ax = plt_.subplots(1, 2)
+    ok_g, ok_d = met.draw_gas_mzr(ax[0], pop), met.draw_dgr(ax[1], pop)
+    plt_.close(fig)
+    with tempfile.TemporaryDirectory() as td:
+        o24 = met.plot_stellar_mzr(pop, os.path.join(td, "24.png"), title="selftest", z=10.0)
+        o25 = met.plot_iron(pop, fe, os.path.join(td, "25.png"), title="selftest", z=10.0)
+    c.check("metallicity: fig 05 panels (b) gas MZR and (c) DGR, fig 24 and fig 25 drawn from a synthetic population",
+            ok_g and ok_d and o24 is not None and o25 is not None)
+    lines = met.report_lines(pop, fe)
+    c.check("metallicity: report block has the galaxy's O/H, Z*, <[Fe/H]>* vs Kirby+13 and the [O/Fe] medians",
+            "12+log(O/H) gas <R1/2" in lines and "Kirby+13 at its mass" in lines and "median [O/Fe]" in lines, lines)
+    rows = diagnostics.figure_applicability({}, {}, [], no_metallicity={"24": "catalogue has no SubhaloStarMetallicityHalfRad"})
+    r24 = [x for x in rows if x[0] == "24"]
+    c.check("fig 24 'not applicable' with the reason when the catalogue lacks the field",
+            len(r24) == 1 and r24[0][2] == "n/a", str(r24))
+
+
+def _check_density(c, tmp):
+    """Fig 23: profiles of a uniform sphere against the formulae; observation points; n/a reason."""
+    from . import density as den, obs
+
+    print("\n[density]")
+    rng = np.random.default_rng(7)
+    n, Rs, M = 200000, 100.0, 1.0e8
+    v = rng.normal(size=(n, 3))
+    pos = v / np.linalg.norm(v, axis=1)[:, None] * (Rs * rng.uniform(0, 1, n) ** (1 / 3))[:, None]
+    m = np.full(n, M / n)
+    age = np.where(np.arange(n) % 4 == 0, 5.0, 300.0)
+    tab = den.compute(pos, m, age, rhalf_pc=Rs * 0.5 ** (1 / 3), eps_pc=2.0)
+    g = tab["grid"]
+    inner = (g > 10) & (g < 80)
+    # rho(<r) is tested from 30 pc out: inside, too few particles (N(<10 pc) ~ 200, 7 % Poisson noise)
+    inner3d = (g > 30) & (g < 90)
+    rho0 = M / (4 / 3 * np.pi * Rs ** 3)
+    sig_true = M * (1 - (1 - np.minimum(g / Rs, 1) ** 2) ** 1.5) / (np.pi * g ** 2)
+    c.check("density: rho(<r) of a uniform sphere = M / (4/3 pi R^3) inside it (2 %)",
+            np.allclose(tab["prof"]["all"]["rho"][inner3d], rho0, rtol=0.02))
+    c.check("density: Sigma(<R) = M [1 - (1 - R^2/R_s^2)^1.5] / (pi R^2), mean of 3 projections (2 %)",
+            np.allclose(tab["prof"]["all"]["sigma"][inner], sig_true[inner], rtol=0.02))
+    re_true = Rs * np.sqrt(1 - 0.5 ** (2 / 3))
+    c.check("density: projected half-mass radius of a uniform sphere = R_s sqrt(1 - 0.5^(2/3)) = %.1f pc" % re_true,
+            abs(tab["re_pc"] / re_true - 1) < 0.01, "%.2f pc" % tab["re_pc"])
+    c.check("density: young stars (1 in 4) have a quarter of the density",
+            np.allclose(tab["prof"]["young"]["rho"][inner3d], 0.25 * rho0, rtol=0.05))
+    O = den.observation_points()
+    k = [i for i, r in enumerate(obs.BAGGEN23) if r[0] == 21834][0]
+    c.check("density: Baggen+23 21834 circularised 137 pc x sqrt(0.1), mass 10^(9.61 - 0.24); "
+            "Sigma_eff = (M/2)/(pi r_e^2)",
+            np.isclose(O["baggen23"]["re"][k], 137 * np.sqrt(0.1)) and np.isclose(O["baggen23"]["m"][k], 10 ** 9.37)
+            and np.isclose(den.sigma_eff(2.0, 1.0), 1 / np.pi))
+    with tempfile.TemporaryDirectory() as td:
+        out = den.plot(tab, os.path.join(td, "23_density_profile.png"), title="selftest", z=10.0)
+        c.check("density: fig 23 is drawn", out is not None and os.path.isfile(out))
+    rows = diagnostics.figure_applicability({}, {}, [], no_density="catalogue has no SubhaloOffsetType")
+    r23 = [x for x in rows if x[0] == "23"]
+    c.check("fig 23 is 'not applicable' with the reason when there is no bound-star slice",
+            len(r23) == 1 and r23[0][2] == "n/a" and "SubhaloOffsetType" in r23[0][3], str(r23))
+
+
 def _check_contamination(c, snap_ref, tmp):
     """CONTAMINATION block on a small synthetic snapshot with known low-res particles."""
     import h5py
@@ -826,6 +934,33 @@ def _check_contamination(c, snap_ref, tmp):
             np.isclose(float(rows["1"][3]), f1, rtol=2e-3), "%s vs %.4g" % (rows["1"][3], f1))
     no = con.analyse(snap_ref)
     c.check("contamination: a run with no type 2/3 particles says so", "no low-res contamination possible" in no, no)
+
+    class FakeCat2:
+        """3 subhalos: 0 central of group 0 (low-res at 0.2 R200c), 1 its satellite, 2 central of a far group 1."""
+        n_sub = 3
+
+        def __init__(self, nstar2=20):
+            lt = np.zeros((3, 6), dtype=np.int64)
+            lt[:, 4] = [50, 50, nstar2]
+            self.G = {"pos": np.array([C, C + np.array([300.0, 0.0, 0.0])]), "r200c": np.array([R200, R200])}
+            self.S = {"lentype": lt}
+
+        def g(self, k, default=None):
+            return self.G.get(k, default)
+
+        def s(self, k, default=None):
+            return self.S.get(k, default)
+
+        def group_of(self):
+            return np.array([0, 0, 1])
+
+        def is_central(self):
+            return np.array([True, False, True])
+
+    fl, why = con.clean_flags(snap, FakeCat2())
+    fl5, _ = con.clean_flags(snap, FakeCat2(nstar2=5))
+    c.check("clean centrals: contaminated group's central and its satellite out, far central in; < 10 stars out",
+            fl is not None and list(fl) == [False, False, True] and list(fl5) == [False, False, False], why)
 
 
 def _check_overview_no_bh(c, hist, units_, tmp):
@@ -1224,7 +1359,8 @@ def _check_scenarios(c, tmp):
         kst_, kwhy_ = kin_.bound_stars(snap)
         rows = diagnostics.figure_applicability(
             summ, logs, [os.path.join(figdir, f) for f in os.listdir(figdir) if f.endswith((".png", ".html"))],
-            no_kinematics=None if kst_ is not None else kwhy_)
+            no_kinematics=None if kst_ is not None else kwhy_, no_density=None if kst_ is not None else kwhy_,
+            no_metallicity=_met_reasons(snap))
         status = {r[0]: r[2] for r in rows}
         c.check("%s: nothing reported as a real gap" % name,
                 not [k for k, v in status.items() if v == diagnostics.MISSING],

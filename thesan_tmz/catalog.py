@@ -85,6 +85,13 @@ SUB_ALIASES = {
     "zgas": ("SubhaloGasMetallicity",),
     "zgassfr": ("SubhaloGasMetallicitySfr",),
     "zstar": ("SubhaloStarMetallicity",),
+    "zgas_halfrad": ("SubhaloGasMetallicityHalfRad",),
+    "zstar_halfrad": ("SubhaloStarMetallicityHalfRad",),
+    "gasmetfrac_halfrad": ("SubhaloGasMetalFractionsHalfRad",),
+    "gasmetfrac_sfrw": ("SubhaloGasMetalFractionsSfrWeighted",),
+    "starmetfrac": ("SubhaloStarMetalFractions",),
+    "dgr_halfrad": ("SubhaloGasDustMetallicityHalfRad",),
+    "dgr_sfr": ("SubhaloGasDustMetallicitySfr",),
     "highres": ("SubhaloHighResStellarFraction",),
     "mostbound": ("SubhaloIDMostbound", "SubhaloIDMostBound"),
     "spin": ("SubhaloSpin",),
@@ -433,6 +440,12 @@ class Catalog:
         put("vmax", "vmax")
         put("zgas", "Zgas")
         put("zstar", "Zstar")
+        for key in ("zgas_halfrad", "zstar_halfrad", "gasmetfrac_halfrad", "gasmetfrac_sfrw", "starmetfrac",
+                    "dgr_halfrad", "dgr_sfr"):
+            put(key, key)
+        mt_all = self.s("masstype")
+        if mt_all is not None:
+            p["mstar_total"] = np.asarray(mt_all, dtype=np.float64)[:, io.PT_STAR] * M
         put("highres", "highres")
         put("halfmassradtype", "rhalf_star", L, col=io.PT_STAR)
 

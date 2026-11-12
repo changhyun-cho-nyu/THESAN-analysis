@@ -43,6 +43,8 @@ Module map
 ``uv``          intrinsic 1500 A luminosity per star from the run's spectrum tables
 ``kinematics``  spin directions of stars and gas, v/sigma of the bound stars (fig 22)
 ``contamination`` low-res (type 2, 3) particles around the target halo (report.txt)
+``density``     stellar rho(<r), Sigma(<R) of the bound stars vs compact JWST systems (fig 23)
+``metallicity`` gas MZR / DGR, stellar MZR, iron of the galaxy and the clean centrals (figs 05, 24, 25)
 ``plotstyle``   shared matplotlib style and helpers
 ``run_all``     driver that produces the whole figure set
 """
@@ -60,6 +62,8 @@ __all__ = [
     "uv",
     "kinematics",
     "contamination",
+    "density",
+    "metallicity",
     "local_mesh",
     "slr_mesh",
     "galaxy",

@@ -112,7 +112,7 @@ projection maps.
 | `02_bh_growth.png` | total BH mass and accretion rate, BH count and mergers, the most massive BHs |
 | `03_star_formation.png` | star formation history and stellar growth |
 | `04_energy.png` | energy budget of the box; AGN energy released and deposited, per channel, against the expected value |
-| `05_scaling_*.png` | the galaxy against published relations (M★–M_halo, M_BH–M★, main sequence, MZR, M_BH–σ, …); the M★–M_halo population panel uses the FoF group mass and marks the target galaxy |
+| `05_scaling_*.png` | the galaxy against published relations (M★–M_halo, M_BH–M★, main sequence, MZR, M_BH–σ, …); the M★–M_halo population panel uses the FoF group mass and marks the target galaxy ; the MZR has (a) the galaxy's track vs z = 0 relations, (b) the clean centrals' gas 12+log(O/H) from the oxygen fraction vs Curti+24, Nakajima+23, Chemerynska+24, (c) dust-to-gas vs O/H |
 | `06_injection_counters.png` | per-step injected energy of the collimated feedback (needs `--stdout`) |
 | `07_axis_stability.png` | how much the jet axis wanders (runs with `BH_BIPOLAR_FEEDBACK`) |
 | `08_accretion_internals.png` | accretion-model internals: raw vs capped rate, Eddington ratio (pre-cap demand and actual, up to 100× Eddington), BH environment |
@@ -130,8 +130,11 @@ projection maps.
 | `20_galaxy_view.png` | the galaxy **face-on and edge-on** in its own spin frame; rows: all stars, stars < 10 Myr, intrinsic UV 1500 Å (L_ν at exactly 1500 Å from the spectrum tables; `--uv-recipe arepo` for AREPO's 1490–1510 Å average), gas; 3 stellar half-mass radii each side (a few hundred pc at z ~ 10; `--galaxy-extent` to set it). Black background, scale bar, a colour bar inside each row. A row that cannot be made is left out and the title says why |
 | `21_gas_uv.png` | gas in grey with the stars' intrinsic UV (1500 Å) on top, face-on and edge-on, same frame as fig 20; the UV fades out over its faintest decades, thin contours one per dex. Not applicable without the run's spectrum tables |
 | `22_kinematics.png` | (a) angle between the spins of the bound stars, all gas and star-forming gas, and of each to the galaxy's spin axis, in spheres of 0.5–5 stellar half-mass radii; (b) v/σ_z and v/σ_1D of all and young (< 10 Myr) bound stars in shells. Table in report.txt (KINEMATICS). Needs `SubhaloOffsetType` and a group-ordered snapshot (checked), else not applicable |
+| `23_density_profile.png` | mean enclosed stellar density ρ(<r) and projected Σ(<R) (mean of x, y, z) of the bound stars, all and < 10 Myr, from ½ ε★ to 10 r½, unresolved r < 2.8 ε★ shaded; the galaxy's half-mass point; JWST compact systems (Baggen+23/24, GN-z11, Cosmic Gems clusters; sizes circularised, Chabrier masses) and the Hopkins+10 Σ_max. Numbers in report.txt (DENSITY). Same requirement as fig 22 |
+| `24_stellar_mzr.png` | Z★ within R½ vs M★ of the clean centrals (median line) and the galaxy (gas for reference); Z★/Z_gas. Needs `SubhaloStarMetallicityHalfRad` |
+| `25_iron.png` | (a) mass-weighted stellar ⟨[Fe/H]⟩ vs M★ of the clean centrals and the galaxy against Kirby+13 (z = 0 Local Group; dashed outside its mass range); (b) gas-phase [Fe/H] within R½; (c) [O/Fe] vs [Fe/H] of the galaxy's bound stars. Panels without their fields say so |
 | `bh_table.txt` | one row per BH in the last snapshot |
-| `report.txt` | the run's configuration, checks, and **which figures apply**; also KINEMATICS (fig 22's numbers) and CONTAMINATION: low-res (type 2 and 3) particles around the target's FoF group — members of the group and its main subhalo, the nearest one (clean-sphere radius in R200c), counts and the low-res mass fraction within 0.5–10 R200c, and where that fraction first exceeds 1e-4 … 0.1. Uses the map snapshot (`--map-snap`) |
+| `report.txt` | the run's configuration, checks, and **which figures apply**; also KINEMATICS (fig 22's numbers), DENSITY (fig 23's: r_e, Σ_eff, Σ(<100 pc), ρ(<10/20/50 pc)), METALLICITY (the galaxy's O/H, Z★, ⟨[Fe/H]⟩★ against Kirby+13, [O/Fe]; the clean centrals' offsets from Kirby+13) and CONTAMINATION: low-res (type 2 and 3) particles around the target's FoF group — members of the group and its main subhalo, the nearest one (clean-sphere radius in R200c), counts and the low-res mass fraction within 0.5–10 R200c, and where that fraction first exceeds 1e-4 … 0.1. Uses the map snapshot (`--map-snap`) |
 
 **Not every run produces every figure, and that is expected.** The end of
 `report.txt` (also printed on screen) labels each figure as *produced*, *not
@@ -155,7 +158,7 @@ the snapshots keep every BH.
 | `--figdir DIR` | where to write the figures |
 | `--snapshots 0-40` or `0,10,20` | only these snapshots |
 | `--catalog-only` | use the group catalogues only (fast; no apertures, gas phases or kinematics) |
-| `--map-snap N` | make the maps and the kinematics (figs 10–14, 20–22) from snapshot N instead of the last one. File names stay the same, so add `--figdir` to keep both sets. A snapshot without particle data skips them with a message |
+| `--map-snap N` | make the maps, kinematics, density profile and metallicity (figs 10–14, 20–25) from snapshot N instead of the last one. File names stay the same, so add `--figdir` to keep both sets. A snapshot without particle data skips them with a message |
 | `--no-maps` | skip the projection figures (10–14, 20, 21), which are slow |
 | `--stdout run.out` | the run's stdout file(s), comma-separated for restarts; enables fig 06 and the energy ledger |
 | `--bh-id ID` | follow this BH instead of the default one |

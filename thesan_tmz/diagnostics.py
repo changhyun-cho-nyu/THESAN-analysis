@@ -1154,6 +1154,9 @@ FIGURE_REQUIREMENTS = (
     ("20", "galaxy_view", "a readable snapshot with stars or gas"),
     ("21", "gas_uv", "a snapshot and the run's spectrum tables (SpectrumTablePath)"),
     ("22", "kinematics", "a snapshot whose catalogue has SubhaloOffsetType (group-ordered)"),
+    ("23", "density_profile", "a snapshot whose catalogue has SubhaloOffsetType (group-ordered)"),
+    ("24", "stellar_mzr", "a catalogue with SubhaloStarMetallicityHalfRad"),
+    ("25", "iron", "a catalogue (stellar [Fe/H] needs SubhaloOffsetType and GFM_Metals)"),
 )
 
 NOT_APPLICABLE = "n/a"
@@ -1163,7 +1166,8 @@ MISSING = "MISSING"
 
 
 def figure_applicability(summary, logs, produced, has_snapshots=True, has_history=True,
-                         has_catalog=True, skipped=(), all_bh_lowres=False, no_uv=None, no_kinematics=None):
+                         has_catalog=True, skipped=(), all_bh_lowres=False, no_uv=None, no_kinematics=None,
+                         no_density=None, no_metallicity=None):
     """Classify every figure as produced / not applicable / missing.
 
     The distinction is the point.  A run built without ``BH_BIPOLAR_INJECTION``
@@ -1177,7 +1181,8 @@ def figure_applicability(summary, logs, produced, has_snapshots=True, has_histor
     the ids the user deliberately turned off (``--no-maps``, ``--catalog-only``),
     which must not be reported as gaps.  ``no_uv`` is the reason the run has no
     stellar UV (no spectrum tables), which makes fig 21 not applicable;
-    ``no_kinematics`` the reason fig 22 could not be made (no bound-star slice).
+    ``no_kinematics`` / ``no_density`` the reason fig 22 / 23 could not be made (no bound-star slice);
+    ``no_metallicity`` maps "24" / "25" to the reason those cannot be made (missing catalogue fields).
 
     Returns a list of ``(id, name, status, reason)``.
     """
@@ -1223,6 +1228,10 @@ def figure_applicability(summary, logs, produced, has_snapshots=True, has_histor
             na = "no stellar UV: %s" % no_uv
         elif fid == "22" and no_kinematics:
             na = no_kinematics
+        elif fid == "23" and no_density:
+            na = no_density
+        elif fid in ("24", "25") and no_metallicity and no_metallicity.get(fid):
+            na = no_metallicity[fid]
         elif fid in ("16", "18") and not has_snapshots:
             na = "needs a readable snapshot"
         elif fid == "19" and not io.has_option(cfg, "SLR_BH"):
