@@ -29,6 +29,19 @@ from .plotstyle import PALETTE, add_redshift_axis, label_panel, plt, savefig, sh
 # ---------------------------------------------------------------------------
 
 
+def _any_positive(v):
+    """True if ``v`` holds at least one finite value > 0."""
+    if v is None:
+        return False
+    v = np.asarray(v, dtype=np.float64)
+    return bool(np.any(np.isfinite(v) & (v > 0)))
+
+
+def _no_black_holes(ax):
+    """Mark a BH panel of a run without black holes."""
+    ax.text(0.5, 0.5, "no black holes", transform=ax.transAxes, ha="center", va="center", color=PALETTE["grey"])
+
+
 def plot_overview(hist, units, outpath, radius=None, title=None, logs=None):
     """Twelve-panel summary of the central galaxy's evolution.
 
@@ -52,18 +65,26 @@ def plot_overview(hist, units, outpath, radius=None, title=None, logs=None):
 
     # 1. black hole mass ----------------------------------------------------
     a = ax[0]
-    a.plot(t, np.where(hist.get("bh_mass_msun", np.nan) > 0, hist["bh_mass_msun"], np.nan), color=C["bh"], label=r"$M_{\rm BH}$ (the galaxy's BH)")
-    if "bh_mass_sum_msun" in hist:
-        a.plot(t, np.where(hist["bh_mass_sum_msun"] > 0, hist["bh_mass_sum_msun"], np.nan), color=C["bh"], ls=":", lw=1.0,
-               label=r"sum of BHs within %g kpc" % R)
-    if "bh_mass_max_msun" in hist:
-        a.plot(t, hist["bh_mass_max_msun"], color=C["bh"], ls="--", lw=1.0, label="most massive BH in the snapshot")
-    if logs and logs.get("blackholes", {}).get("time", np.zeros(0)).size:
-        b = logs["blackholes"]
-        a.plot(units.age_gyr(b["time"]), b["mass_bh"] * units.mass_to_msun, color=PALETTE["grey"], lw=0.8, zorder=0, label="all BHs (log)")
+    has_log = bool(logs and logs.get("blackholes", {}).get("time", np.zeros(0)).size)
+    bh_keys = [k for k in ("bh_mass_msun", "bh_mass_sum_msun", "bh_mass_max_msun") if _any_positive(hist.get(k))]
+    if bh_keys or has_log:
+        if "bh_mass_msun" in bh_keys:
+            a.plot(t, np.where(hist["bh_mass_msun"] > 0, hist["bh_mass_msun"], np.nan), color=C["bh"],
+                   label=r"$M_{\rm BH}$ (the galaxy's BH)")
+        if "bh_mass_sum_msun" in bh_keys:
+            a.plot(t, np.where(hist["bh_mass_sum_msun"] > 0, hist["bh_mass_sum_msun"], np.nan), color=C["bh"], ls=":",
+                   lw=1.0, label=r"sum of BHs within %g kpc" % R)
+        if "bh_mass_max_msun" in bh_keys:
+            a.plot(t, hist["bh_mass_max_msun"], color=C["bh"], ls="--", lw=1.0, label="most massive BH in the snapshot")
+        if has_log:
+            b = logs["blackholes"]
+            a.plot(units.age_gyr(b["time"]), b["mass_bh"] * units.mass_to_msun, color=PALETTE["grey"], lw=0.8, zorder=0,
+                   label="all BHs (log)")
+        a.legend(loc="lower right")
+    else:                                   # a run without black holes
+        _no_black_holes(a)
     a.set_yscale("log")
     a.set_ylabel(r"$M_{\rm BH}$ [M$_\odot$]")
-    a.legend(loc="lower right")
     label_panel(a, "(a) black hole mass")
 
     # 2. stellar mass -------------------------------------------------------
@@ -113,22 +134,30 @@ def plot_overview(hist, units, outpath, radius=None, title=None, logs=None):
 
     # 6. BH accretion rate --------------------------------------------------
     a = ax[5]
+    drawn = False
     if logs and logs.get("blackholes", {}).get("time", np.zeros(0)).size:
         b = logs["blackholes"]
         a.plot(units.age_gyr(b["time"]), b["mdot_msun_per_yr"], color=PALETTE["grey"], lw=0.7, zorder=0, label="blackholes.txt")
+        drawn = True
     y = hist.get("bh_mdot_msun_per_yr")
-    if y is not None:
+    if y is not None and np.any(np.asarray(y) > 0):
         a.plot(t, np.where(y > 0, y, np.nan), color=C["bh"], marker="o", ms=2.5, label="the galaxy's BH (snapshots)")
+        drawn = True
     a.set_yscale("log")
     a.set_ylabel(r"$\dot M_{\rm BH}$ [M$_\odot$ yr$^{-1}$]")
-    a.legend(loc="lower right")
+    if drawn:
+        a.legend(loc="lower right")
+    else:                                   # a run without black holes: say so instead of an empty legend
+        _no_black_holes(a)
     label_panel(a, "(f) accretion rate")
 
     # 7. Eddington ratio ----------------------------------------------------
     a = ax[6]
     y = hist.get("eddington_ratio")
-    if y is not None:
+    if _any_positive(y):
         a.plot(t, np.where(y > 0, y, np.nan), color=C["bh"], marker="o", ms=2.5)
+    else:                                   # a run without black holes
+        _no_black_holes(a)
     a.axhline(1.0, color=PALETTE["vermillion"], ls="--", lw=1.0)
     a.axhline(0.01, color=PALETTE["grey"], ls=":", lw=1.0)
     a.text(0.98, 0.93, r"$\lambda_{\rm Edd}=1$", color=PALETTE["vermillion"], transform=a.transAxes, ha="right", fontsize=7)

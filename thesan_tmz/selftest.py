@@ -49,6 +49,19 @@ class Checker:
 
 
 def run(workdir=None, keep=False, make_figures=True):
+    from . import uv
+
+    # the mock names its own spectrum tables; keep run_all from switching to the
+    # cluster's default folder (DEFAULT_SPECTRA_DIR) when this runs on Trillium
+    saved_default = uv.DEFAULT_SPECTRA_DIR
+    uv.DEFAULT_SPECTRA_DIR = os.path.join(tempfile.gettempdir(), "thesan_tmz_no_such_dir")
+    try:
+        return _run(workdir, keep, make_figures)
+    finally:
+        uv.DEFAULT_SPECTRA_DIR = saved_default
+
+
+def _run(workdir=None, keep=False, make_figures=True):
     tmp = workdir or tempfile.mkdtemp(prefix="thesan_tmz_selftest_")
     root = os.path.join(tmp, "mockrun")
     c = Checker()
@@ -343,6 +356,7 @@ def run(workdir=None, keep=False, make_figures=True):
     _check_uv(c, s_)
     _check_kinematics(c, s_)
     _check_map_snap(c, root, tmp)
+    _check_overview_no_bh(c, hist, hist["_units"], tmp)
     c.check("history: cache round-trips", _cache_roundtrip_ok(out, hist))
     lam_expect = hist["bh_mdot_msun_per_yr"] / hist["_units"].eddington_rate_msun_per_yr(hist["bh_mass_msun"], _mockrun.EPS_R)
     c.check("history: Eddington ratio uses the run's eps (0.2), not 0.1",
@@ -707,21 +721,65 @@ def _check_map_snap(c, root, tmp):
     maps.plot_galaxy_view = rec("galaxy_view", orig[0])
     maps.plot_phase_diagram = rec("phase_diagram", orig[1])
     kin.analyse = rec("kinematics", orig[2])
+    from . import uv
+
     buf = _io.StringIO()
+    saved_default = uv.DEFAULT_SPECTRA_DIR
+    uv.DEFAULT_SPECTRA_DIR = os.path.join(root, "spectra")         # where the mock's tables are
     try:
         with contextlib.redirect_stdout(buf):
             run_all.main([root, "--figdir", os.path.join(tmp, "fig_mapsnap"), "--map-snap", "3", "--mesh-bhs", "0"])
+            uv.DEFAULT_SPECTRA_DIR = saved_default
             seen_good = dict(seen)
             seen.clear()
             run_all.main([root, "--figdir", os.path.join(tmp, "fig_mapsnap_bad"), "--map-snap", "999", "--mesh-bhs", "0"])
     finally:
         maps.plot_galaxy_view, maps.plot_phase_diagram, kin.analyse = orig
+        uv.DEFAULT_SPECTRA_DIR = saved_default
     log = buf.getvalue()
+    c.check("run_all without --spectra-dir uses the default folder when it exists, and says so",
+            "spectrum tables from %s (default" % os.path.join(root, "spectra") in log
+            and "21 gas_uv              produced" in log)
     c.check("--map-snap 3: figs 10, 20 and the kinematics are made from snapshot 3, not the last",
             seen_good == {"galaxy_view": 3, "phase_diagram": 3, "kinematics": 3}, str(seen_good))
     c.check("--map-snap 999 (no such snapshot): maps skipped with a message, listed as skipped, not missing",
             not seen and "no such snapshot" in log and "22 kinematics          skipped" in log
             and "missing" in log and " 0 missing" in log, str(seen))
+
+
+def _check_overview_no_bh(c, hist, units_, tmp):
+    """Fig 01 panel (f) for a run without black holes: 'no black holes', no empty-legend warning."""
+    import warnings
+
+    from . import evolution
+
+    # a run without black holes: the history still has the BH keys, all zero (or NaN for the ratio)
+    h = dict(hist)
+    for k, v in hist.items():
+        if (k.startswith("bh_") or k == "eddington_ratio") and isinstance(v, np.ndarray) and v.dtype.kind == "f":
+            h[k] = np.full_like(v, np.nan if k == "eddington_ratio" else 0.0)
+    h_nokey = {k: v for k, v in h.items() if k != "bh_mdot_msun_per_yr"}   # as in a real run without BHs
+    marked = []
+    orig = evolution._no_black_holes
+    evolution._no_black_holes = lambda ax: (marked.append(1), orig(ax))
+    try:
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            out = evolution.plot_overview(h, units_, os.path.join(tmp, "01_overview_nobh.png"), logs={})
+            out2 = evolution.plot_overview(h_nokey, units_, os.path.join(tmp, "01_overview_nobh2.png"), logs={})
+        n_nobh = len(marked)
+        marked.clear()
+        evolution.plot_overview(hist, units_, os.path.join(tmp, "01_overview_withbh.png"), logs={})
+        n_withbh = len(marked)
+    finally:
+        evolution._no_black_holes = orig
+    out = out if out2 else None
+    empty_legend = [x for x in w if "No artists with labels" in str(x.message)]
+    c.check("fig 01 without black holes: panels (a), (f), (g) say 'no black holes' (both histories); "
+            "a run with BHs has none of these marks",
+            n_nobh == 6 and n_withbh == 0, "marks: %d without BHs, %d with" % (n_nobh, n_withbh))
+    c.check("fig 01 without black holes: drawn, and panel (f) gives no empty-legend warning",
+            out is not None and not empty_legend, "%d legend warnings" % len(empty_legend))
 
 
 def _check_kinematics(c, snap):

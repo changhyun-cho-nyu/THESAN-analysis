@@ -163,7 +163,7 @@ the snapshots keep every BH.
 | `--extent 20` | half-size of the maps, kpc (figs 12, 13) |
 | `--galaxy-extent` | half-size of fig 20, kpc; default 3 stellar half-mass radii, clamped to 0.1-20 kpc |
 | `--uv-recipe point\|arepo` | stellar UV in figs 20, 21: `point` (default) = L_ν at exactly 1500 Å; `arepo` = the 1490–1510 Å average AREPO's `MRT_FOF_1500` uses for `Subhalo_Luminosity1500`. The UV-check line against the catalogue always uses `arepo` |
-| `--spectra-dir DIR` | folder with the spectrum tables (UV in figs 20, 21). The file names come from the run's `SpectrumTablePath` / `PopIIISpectrumTablePath`; a run that names none uses `bpass_spectra_bin_chab100_v2.2.1.hdf5` and `pop3_spectra.log-flat.M2p0-250p0.hdf5`. A missing file is skipped (those stars get no UV; the figure title says so). `run_all_tests.sh` passes `/scratch/chcho/Arepo_GFM_Tables` |
+| `--spectra-dir DIR` | folder with the spectrum tables (UV in figs 20, 21). The file names come from the run's `SpectrumTablePath` / `PopIIISpectrumTablePath`; a run that names none uses `bpass_spectra_bin_chab100_v2.2.1.hdf5` and `pop3_spectra.log-flat.M2p0-250p0.hdf5`. A missing file is skipped (those stars get no UV; the figure title says so). Default: `/scratch/chcho/Arepo_GFM_Tables` when that folder exists (so on Trillium you need not give it) |
 | `--mesh-bhs 10` | 3D page for this many most massive BHs (`0` skips it) |
 | `--show-lowres-bhs` | keep BHs that sit in low-res gas in the per-BH figures (hidden by default) |
 | `--total-mass` | use the total bound mass of each subhalo instead of the mass within twice the half-mass radius |

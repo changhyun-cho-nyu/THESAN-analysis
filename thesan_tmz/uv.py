@@ -132,6 +132,10 @@ class SpectrumTable:
         return np.where(pos, 10.0 ** np.sum(w * logv, axis=0), np.maximum(np.sum(w * v, axis=0), 0.0))
 
 
+#: ``run_all`` uses this as ``--spectra-dir`` when the option is not given and
+#: the folder exists (your copy on Trillium)
+DEFAULT_SPECTRA_DIR = "/scratch/chcho/Arepo_GFM_Tables"
+
 #: tables used when the run's parameters name none (runs built without MRT
 #: stars): the BPASS and Pop III tables of the THESAN-Zoom runs, looked up in
 #: ``--spectra-dir``

@@ -63,8 +63,9 @@ def main(argv=None):
                     help="stellar UV in figs 20, 21: 'point' = L_nu at exactly 1500 A (default); "
                          "'arepo' = 1490-1510 A average, AREPO's MRT_FOF_1500 (what Subhalo_Luminosity1500 sums)")
     ap.add_argument("--spectra-dir", default=None,
-                    help="directory holding the run's spectrum tables (same file names as SpectrumTablePath / "
-                         "PopIIISpectrumTablePath), when the paths in the parameters do not exist here")
+                    help="directory holding the spectrum tables (file names from SpectrumTablePath / "
+                         "PopIIISpectrumTablePath, or the two THESAN-Zoom defaults); default %s when it exists"
+                         % uv.DEFAULT_SPECTRA_DIR)
     ap.add_argument("--map-snap", type=int, default=None,
                     help="make the maps and the kinematics (figs 10-14, 20-22) from this snapshot number instead "
                          "of the last one; the file names stay the same, so use --figdir to keep both")
@@ -81,6 +82,9 @@ def main(argv=None):
                     help="keep BHs that sit in low-res gas (zoom-edge seeding artefacts, see lowres.py) in the "
                          "per-BH figures; by default they are hidden from figs 02(d), 08, 16-19 and bh_table.txt")
     args = ap.parse_args(argv)
+    if args.spectra_dir is None and os.path.isdir(uv.DEFAULT_SPECTRA_DIR):
+        args.spectra_dir = uv.DEFAULT_SPECTRA_DIR
+        print("  [run_all] spectrum tables from %s (default; --spectra-dir to change)" % args.spectra_dir)
 
     run_dir, out_dir = resolve_dirs(args.run)
     figdir = args.figdir or os.path.join(run_dir, "figures")
