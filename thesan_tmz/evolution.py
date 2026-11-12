@@ -211,8 +211,10 @@ def plot_overview(hist, units, outpath, radius=None, title=None, logs=None):
     # 12. M_BH / M_star -----------------------------------------------------
     a = ax[11]
     y = hist.get("mbh_over_mstar")
-    if y is not None:
+    if _any_positive(y):
         a.plot(t, np.where(y > 0, y, np.nan), color=C["bh"], marker="o", ms=2.5, label="simulation")
+    else:                                   # a run without black holes
+        _no_black_holes(a)
     a.axhline(obs.bh_mass_fraction_local(), color=PALETTE["vermillion"], ls="--", lw=1.0, label="local (KH13, bulges)")
     a.set_yscale("log")
     a.set_ylabel(r"$M_{\rm BH}/M_\star$")

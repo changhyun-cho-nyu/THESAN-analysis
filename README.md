@@ -158,13 +158,14 @@ the snapshots keep every BH.
 | `--figdir DIR` | where to write the figures |
 | `--snapshots 0-40` or `0,10,20` | only these snapshots |
 | `--catalog-only` | use the group catalogues only (fast; no apertures, gas phases or kinematics) |
-| `--map-snap N` | make the maps, kinematics, density profile and metallicity (figs 10–14, 20–25) from snapshot N instead of the last one. File names stay the same, so add `--figdir` to keep both sets. A snapshot without particle data skips them with a message |
+| `--map-snap N` | make the maps, kinematics, density profile, metallicity and the contamination block (figs 10–14, 20–25) from snapshot N instead of the last one. File names stay the same, so add `--figdir` to keep both sets. A snapshot without particle data skips them with a message |
 | `--no-maps` | skip the projection figures (10–14, 20, 21), which are slow |
 | `--stdout run.out` | the run's stdout file(s), comma-separated for restarts; enables fig 06 and the energy ledger |
 | `--bh-id ID` | follow this BH instead of the default one |
+| `--centre bh,subhalo,group,potmin,densest` | centring methods to try, in order |
 | `--radii 1,2,5,10,30` | aperture radii in physical kpc |
 | `--extent 20` | half-size of the maps, kpc (figs 12, 13) |
-| `--galaxy-extent` | half-size of fig 20, kpc; default 3 stellar half-mass radii, clamped to 0.1-20 kpc |
+| `--galaxy-extent` | half-size of figs 20 and 21, kpc; default 3 stellar half-mass radii, clamped to 0.1-20 kpc |
 | `--uv-recipe point\|arepo` | stellar UV in figs 20, 21: `point` (default) = L_ν at exactly 1500 Å; `arepo` = the 1490–1510 Å average AREPO's `MRT_FOF_1500` uses for `Subhalo_Luminosity1500`. The UV-check line against the catalogue always uses `arepo` |
 | `--spectra-dir DIR` | folder with the spectrum tables (UV in figs 20, 21). The file names come from the run's `SpectrumTablePath` / `PopIIISpectrumTablePath`; a run that names none uses `bpass_spectra_bin_chab100_v2.2.1.hdf5` and `pop3_spectra.log-flat.M2p0-250p0.hdf5`. A missing file is skipped (those stars get no UV; the figure title says so). Default: `/scratch/chcho/Arepo_GFM_Tables` when that folder exists (so on Trillium you need not give it) |
 | `--mesh-bhs 10` | 3D page for this many most massive BHs (`0` skips it) |

@@ -1166,8 +1166,7 @@ MISSING = "MISSING"
 
 
 def figure_applicability(summary, logs, produced, has_snapshots=True, has_history=True,
-                         has_catalog=True, skipped=(), all_bh_lowres=False, no_uv=None, no_kinematics=None,
-                         no_density=None, no_metallicity=None):
+                         has_catalog=True, skipped=(), all_bh_lowres=False, unavailable=None):
     """Classify every figure as produced / not applicable / missing.
 
     The distinction is the point.  A run built without ``BH_BIPOLAR_INJECTION``
@@ -1179,10 +1178,9 @@ def figure_applicability(summary, logs, produced, has_snapshots=True, has_histor
 
     ``produced`` is the list of files ``run_all`` actually wrote; ``skipped`` is
     the ids the user deliberately turned off (``--no-maps``, ``--catalog-only``),
-    which must not be reported as gaps.  ``no_uv`` is the reason the run has no
-    stellar UV (no spectrum tables), which makes fig 21 not applicable;
-    ``no_kinematics`` / ``no_density`` the reason fig 22 / 23 could not be made (no bound-star slice);
-    ``no_metallicity`` maps "24" / "25" to the reason those cannot be made (missing catalogue fields).
+    which must not be reported as gaps.  ``unavailable`` maps a figure id to the
+    reason it cannot be made for this run (e.g. "21": no spectrum tables, "22":
+    no bound-star slice, "24": a missing catalogue field).
 
     Returns a list of ``(id, name, status, reason)``.
     """
@@ -1224,14 +1222,8 @@ def figure_applicability(summary, logs, produced, has_snapshots=True, has_histor
             na = "needs the particle snapshot history, which was not built"
         elif fid in ("10", "11", "12", "13", "14", "20", "21") and not has_snapshots:
             na = "needs a readable snapshot"
-        elif fid == "21" and no_uv:
-            na = "no stellar UV: %s" % no_uv
-        elif fid == "22" and no_kinematics:
-            na = no_kinematics
-        elif fid == "23" and no_density:
-            na = no_density
-        elif fid in ("24", "25") and no_metallicity and no_metallicity.get(fid):
-            na = no_metallicity[fid]
+        elif unavailable and unavailable.get(fid):
+            na = unavailable[fid]
         elif fid in ("16", "18") and not has_snapshots:
             na = "needs a readable snapshot"
         elif fid == "19" and not io.has_option(cfg, "SLR_BH"):

@@ -59,12 +59,9 @@ def v_over_sigma(pos, vel, m, axis, sel):
     n = int(np.sum(sel))
     if n < MIN_STARS:
         return np.nan, np.nan, np.nan, n
-    e3 = np.asarray(axis, dtype=np.float64) / np.linalg.norm(axis)
-    tmp = np.array([1.0, 0.0, 0.0]) if abs(e3[0]) < 0.9 else np.array([0.0, 1.0, 0.0])
-    e1 = np.cross(tmp, e3)
-    e1 /= np.linalg.norm(e1)
-    e2 = np.cross(e3, e1)
-    B = np.vstack([e1, e2, e3])
+    from .maps import rotation_to_axis
+
+    B = rotation_to_axis(axis)                          # rows e1, e2, e3 = axis
     q, vq, w = pos[sel] @ B.T, vel[sel] @ B.T, m[sel]
     R = np.hypot(q[:, 0], q[:, 1])
     with np.errstate(invalid="ignore", divide="ignore"):

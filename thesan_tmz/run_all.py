@@ -58,7 +58,7 @@ def main(argv=None):
     ap.add_argument("--stdout", default=None, help="stdout log(s) for the injection counters; comma-separated for a restart chain")
     ap.add_argument("--extent", type=float, default=20.0, help="half-size of the projection maps, kpc")
     ap.add_argument("--galaxy-extent", type=float, default=None,
-                    help="half-size of fig 20 (galaxy view), kpc; default 3 stellar half-mass radii")
+                    help="half-size of figs 20-21 (galaxy view, gas + UV), kpc; default 3 stellar half-mass radii")
     ap.add_argument("--uv-recipe", choices=uv.RECIPES, default="point",
                     help="stellar UV in figs 20, 21: 'point' = L_nu at exactly 1500 A (default); "
                          "'arepo' = 1490-1510 A average, AREPO's MRT_FOF_1500 (what Subhalo_Luminosity1500 sums)")
@@ -338,50 +338,37 @@ def main(argv=None):
                 title=title,
             )
 
-    # -- 6b. kinematics of the galaxy (fig 22) -------------------------------
-    no_kin = "needs a readable snapshot" if map_snap is None else None
-    no_den = no_kin
-    if map_snap is not None:
+    # -- 6b. kinematics (22), density profile (23), metallicity (24, 25) ----
+    unavailable = {}                        # figure id -> why this run cannot have it
+    if map_snap is None:
+        unavailable.update(dict.fromkeys(("22", "23", "24", "25"), "needs a readable snapshot"))
+    else:
         print("\n--- kinematics ---")
         kcen, kinfo = galaxy.auto_centre(map_snap, prefer=centre_prefer, bh_id=args.bh_id)
         if kcen is None:
-            no_kin = no_den = "no galaxy centre (%s)" % kinfo.get("reason")
+            unavailable.update(dict.fromkeys(("22", "23"), "no galaxy centre (%s)" % kinfo.get("reason")))
         else:
-            try:
-                ktab, knote = kinematics.analyse(map_snap, kcen)
-            except Exception as exc:
-                ktab, knote = None, "failed: %s: %s" % (type(exc).__name__, exc)
-            print("  " + knote)
-            reports.append(kinematics.report_lines(ktab, knote))
-            if ktab is None:
-                no_kin = knote
-            else:
-                made += _try("kinematics", kinematics.plot, ktab, os.path.join(figdir, "22_kinematics.png"),
-                             title=title, z=map_snap.z)
-            # fig 23: stellar density profiles (same bound stars and centre)
-            try:
-                dtab, dnote = density.analyse(map_snap, kcen)
-            except Exception as exc:
-                dtab, dnote = None, "failed: %s: %s" % (type(exc).__name__, exc)
-            reports.append(density.report_lines(dtab, dnote))
-            if dtab is None:
-                no_den = dnote
-            else:
-                made += _try("density profile", density.plot, dtab, os.path.join(figdir, "23_density_profile.png"),
-                             title=title, z=map_snap.z)
+            # the same bound stars and centre for both
+            for fid, label, mod, png in (("22", "kinematics", kinematics, "22_kinematics.png"),
+                                         ("23", "density profile", density, "23_density_profile.png")):
+                tab, note = _analysed(mod.analyse, map_snap, kcen)
+                if mod is kinematics:
+                    print("  " + note)
+                reports.append(mod.report_lines(tab, note))
+                if tab is None:
+                    unavailable[fid] = note
+                else:
+                    made += _try(label, mod.plot, tab, os.path.join(figdir, png), title=title, z=map_snap.z)
 
-    # -- 6b'. metallicity of the galaxy and the clean centrals (figs 24, 25) -
-    no_met = {} if map_snap is not None else {"24": "needs a readable snapshot", "25": "needs a readable snapshot"}
-    if map_snap is not None:
         print("\n--- metallicity ---")
         mpop = _try_value(metallicity.sample, map_snap)
         fe = _try_value(metallicity.iron, map_snap, mpop) if mpop is not None else None
         reports.append(metallicity.report_lines(mpop, fe))
-        no_met = metallicity.unavailable(mpop, fe)
-        if "24" not in no_met:
+        unavailable.update(metallicity.unavailable(mpop, fe))
+        if "24" not in unavailable:
             made += _try("stellar MZR", metallicity.plot_stellar_mzr, mpop, os.path.join(figdir, "24_stellar_mzr.png"),
                          title=title, z=map_snap.z)
-        if "25" not in no_met:
+        if "25" not in unavailable:
             made += _try("iron", metallicity.plot_iron, mpop, fe, os.path.join(figdir, "25_iron.png"),
                          title=title, z=map_snap.z)
 
@@ -405,11 +392,14 @@ def main(argv=None):
         skipped |= {"01", "03"}
     if args.mesh_bhs <= 0:
         skipped |= {"18"}
+    no_uv = _no_uv_reason(map_snap if snaps else None, args.spectra_dir)
+    if no_uv:
+        unavailable["21"] = "no stellar UV: %s" % no_uv
     rows = diagnostics.figure_applicability(
         summary, logs, made,
         has_snapshots=bool(snaps), has_history=hist is not None, has_catalog=chist is not None,
         skipped=skipped, all_bh_lowres=all_bh_lowres,
-        no_uv=_no_uv_reason(map_snap if snaps else None, args.spectra_dir), no_kinematics=no_kin, no_density=no_den, no_metallicity=no_met,
+        unavailable=unavailable,
     )
     # write_report echoes to stdout, so appending is enough -- printing here as
     # well would show the block twice.
@@ -424,6 +414,14 @@ def main(argv=None):
         print("  %s" % os.path.basename(m))
     print("=" * 78)
     return 0 if made else 1
+
+
+def _analysed(fn, *args):
+    """``fn(*args)`` returning (table, note); a failure becomes (None, "failed: ...")."""
+    try:
+        return fn(*args)
+    except Exception as exc:
+        return None, "failed: %s: %s" % (type(exc).__name__, exc)
 
 
 def _no_uv_reason(snap, spectra_dir):

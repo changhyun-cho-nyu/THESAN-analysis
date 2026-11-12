@@ -412,6 +412,26 @@ def radius_from(pos, centre, boxsize=None):
     return np.sqrt(np.sum(d * d, axis=-1))
 
 
+def iter_type(files, ptype, fields=("Coordinates", "Masses"), skip_incomplete=False):
+    """Yield ``(global offset, {field: array})`` one snapshot file at a time for
+    one particle type, so memory stays at one file's particles.  Masses come
+    from ``MassTable`` when the type has no ``Masses`` dataset.  With
+    ``skip_incomplete`` a file lacking one of ``fields`` is skipped (its
+    particles still count in the offsets)."""
+    offset = 0
+    for fn in files:
+        with h5py.File(fn, "r") as f:
+            n = int(np.asarray(f["Header"].attrs["NumPart_ThisFile"])[ptype])
+            if n == 0:
+                continue
+            g = f["PartType%d" % ptype]
+            mt = float(np.asarray(f["Header"].attrs["MassTable"])[ptype])
+            missing = [k for k in fields if k not in g and k != "Masses"]
+            if not (skip_incomplete and missing):
+                yield offset, {k: (g[k][:] if (k != "Masses" or "Masses" in g) else np.full(n, mt)) for k in fields}
+            offset += n
+
+
 def spherical_mask(pos, centre, radius, boxsize=None):
     return radius_from(pos, centre, boxsize) <= radius
 

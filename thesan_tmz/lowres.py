@@ -31,7 +31,6 @@ neighbours; without it a brute-force distance loop does (fine for tens of BHs).
 
 from __future__ import annotations
 
-import h5py
 import numpy as np
 
 from . import arepo_io as io
@@ -103,22 +102,12 @@ def highres_fraction(bh_pos, bh_hsml, chunks, boxsize=None):
 
 def _gas_chunks(snap):
     """(Coordinates, Masses, HighResGasMass) from each snapshot file in turn."""
-    for fn in snap.files:
-        with h5py.File(fn, "r") as f:
-            if "PartType0" not in f:
-                continue
-            g = f["PartType0"]
-            if "Coordinates" not in g or "HighResGasMass" not in g:
-                continue
-            yield g["Coordinates"][:], g["Masses"][:], g["HighResGasMass"][:]
+    for _, d in io.iter_type(snap.files, io.PT_GAS, ("Coordinates", "Masses", "HighResGasMass"), skip_incomplete=True):
+        yield d["Coordinates"], d["Masses"], d["HighResGasMass"]
 
 
 def _has_highres_field(snap):
-    for fn in snap.files:
-        with h5py.File(fn, "r") as f:
-            if "PartType0" in f and "Coordinates" in f["PartType0"]:
-                return "HighResGasMass" in f["PartType0"]
-    return False
+    return "HighResGasMass" in snap.field_names(io.PT_GAS)
 
 
 def classify(snap):

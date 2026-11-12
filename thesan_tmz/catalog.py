@@ -509,13 +509,25 @@ class Catalog:
 def load(snap_or_dir, num=None, units=None):
     """Build a :class:`Catalog` from a :class:`~thesan_tmz.arepo_io.Snapshot`
     or from ``(output_dir, num)``.  Returns None if there is no catalogue."""
+    if num is not None:
+        try:
+            return Catalog(snap_or_dir, num, units=units)
+        except (FileNotFoundError, OSError, KeyError):
+            return None
+    # one Catalog per Snapshot object: several figures ask for it, and reading
+    # every catalogue chunk again each time is only slower
+    snap = snap_or_dir
+    cache = getattr(snap, "_cache", None)
+    key = ("_catalog", id(units))
+    if cache is not None and key in cache:
+        return cache[key]
     try:
-        if num is None:
-            snap = snap_or_dir
-            return Catalog(snap.output_dir, snap.num, units=units or snap.units, a=snap.a)
-        return Catalog(snap_or_dir, num, units=units)
+        cat = Catalog(snap.output_dir, snap.num, units=units or snap.units, a=snap.a)
     except (FileNotFoundError, OSError, KeyError):
-        return None
+        cat = None
+    if cache is not None:
+        cache[key] = cat
+    return cat
 
 
 def target_galaxy(snap, prefer="central", bh_pos=None, use_inrad=True, units=None):

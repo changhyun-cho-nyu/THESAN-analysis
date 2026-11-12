@@ -596,8 +596,6 @@ def _check_eddington_cap(c, units):
 
 def _check_uv(c, snap):
     """Per-star intrinsic 1500 A luminosity against the mock's analytic spectra."""
-    import h5py
-
     from . import uv
 
     print("\n[uv]")
@@ -698,7 +696,7 @@ def _check_uv(c, snap):
     c.check("uv: a default file missing from --spectra-dir is skipped (Pop III dark, Pop II kept)",
             l_def2 is not None and np.all(l_def2[p3] == 0) and np.allclose(l_def2[~p3], want[~p3], rtol=1e-9), why_def2)
     c.check("fig 21 is not drawn without spectrum tables", none21 is None)
-    rows21 = diagnostics.figure_applicability({}, {}, [], no_uv=why)
+    rows21 = diagnostics.figure_applicability({}, {}, [], unavailable={"21": "no stellar UV: %s" % why})
     st21 = [r for r in rows21 if r[0] == "21"]
     c.check("fig 21 is 'not applicable' (not 'missing') without spectrum tables, with the reason",
             len(st21) == 1 and st21[0][2] == "n/a" and "table not found" in st21[0][3], str(st21))
@@ -808,7 +806,7 @@ def _check_metallicity(c, tmp):
     lines = met.report_lines(pop, fe)
     c.check("metallicity: report block has the galaxy's O/H, Z*, <[Fe/H]>* vs Kirby+13 and the [O/Fe] medians",
             "12+log(O/H) gas <R1/2" in lines and "Kirby+13 at its mass" in lines and "median [O/Fe]" in lines, lines)
-    rows = diagnostics.figure_applicability({}, {}, [], no_metallicity={"24": "catalogue has no SubhaloStarMetallicityHalfRad"})
+    rows = diagnostics.figure_applicability({}, {}, [], unavailable={"24": "catalogue has no SubhaloStarMetallicityHalfRad"})
     r24 = [x for x in rows if x[0] == "24"]
     c.check("fig 24 'not applicable' with the reason when the catalogue lacks the field",
             len(r24) == 1 and r24[0][2] == "n/a", str(r24))
@@ -850,10 +848,45 @@ def _check_density(c, tmp):
     with tempfile.TemporaryDirectory() as td:
         out = den.plot(tab, os.path.join(td, "23_density_profile.png"), title="selftest", z=10.0)
         c.check("density: fig 23 is drawn", out is not None and os.path.isfile(out))
-    rows = diagnostics.figure_applicability({}, {}, [], no_density="catalogue has no SubhaloOffsetType")
+    rows = diagnostics.figure_applicability({}, {}, [], unavailable={"23": "catalogue has no SubhaloOffsetType"})
     r23 = [x for x in rows if x[0] == "23"]
     c.check("fig 23 is 'not applicable' with the reason when there is no bound-star slice",
             len(r23) == 1 and r23[0][2] == "n/a" and "SubhaloOffsetType" in r23[0][3], str(r23))
+
+
+class _FakeCat:
+    """A stand-in catalogue for the checks that need exact, hand-set Subfind
+    values: ``groups`` / ``subs`` map the short field names (``catalog``'s
+    aliases) to arrays; ``group_of`` and ``central`` are per-subhalo arrays."""
+
+    def __init__(self, groups=None, subs=None, target=0, group_of=None, central=None):
+        self.G, self.S = dict(groups or {}), dict(subs or {})
+        self._target, self._group_of, self._central = target, group_of, central
+        self.n_sub = len(central) if central is not None else 1
+
+    def g(self, k, default=None):
+        return self.G.get(k, default)
+
+    def s(self, k, default=None):
+        return self.S.get(k, default)
+
+    def target_index(self):
+        return self._target
+
+    def group_of(self):
+        return np.asarray(self._group_of)
+
+    def is_central(self):
+        return np.asarray(self._central)
+
+
+def _lentype(*rows):
+    """``(n, 6)`` particle-count table from ``{type: count}`` dicts, one per row."""
+    lt = np.zeros((len(rows), 6), dtype=np.int64)
+    for i, r in enumerate(rows):
+        for t, n in r.items():
+            lt[i, t] = n
+    return lt
 
 
 def _check_contamination(c, snap_ref, tmp):
@@ -891,27 +924,13 @@ def _check_contamination(c, snap_ref, tmp):
         f.create_group("PartType3")["Coordinates"] = p3
     snap = io.Snapshot(od, 0)
 
-    class FakeCat:
-        def __init__(self):
-            lt = np.zeros((1, 6), dtype=np.int64)
-            lt[0, 2] = 3
-            slt = np.zeros((1, 6), dtype=np.int64)
-            slt[0, 2] = 2
-            self.G = {"pos": C[None, :], "r200c": [R200], "m200c": [1000.0], "mass": [1100.0], "firstsub": [0],
-                      "offsettype": np.zeros((1, 6), dtype=np.int64), "lentype": lt}
-            self.S = {"groupnr": [0], "offsettype": np.zeros((1, 6), dtype=np.int64), "lentype": slt, "mass": [900.0]}
-
-        def g(self, k, default=None):
-            return self.G.get(k, default)
-
-        def s(self, k, default=None):
-            return self.S.get(k, default)
-
-        def target_index(self):
-            return 0
+    fake = _FakeCat(groups={"pos": C[None, :], "r200c": [R200], "m200c": [1000.0], "mass": [1100.0], "firstsub": [0],
+                            "offsettype": np.zeros((1, 6), dtype=np.int64), "lentype": _lentype({2: 3})},
+                    subs={"groupnr": [0], "offsettype": np.zeros((1, 6), dtype=np.int64), "lentype": _lentype({2: 2}),
+                          "mass": [900.0]})
 
     orig = catalog.load
-    catalog.load = lambda *a, **k: FakeCat()
+    catalog.load = lambda *a, **k: fake
     try:
         block = con.analyse(snap)
     finally:
@@ -935,30 +954,14 @@ def _check_contamination(c, snap_ref, tmp):
     no = con.analyse(snap_ref)
     c.check("contamination: a run with no type 2/3 particles says so", "no low-res contamination possible" in no, no)
 
-    class FakeCat2:
+    def fake2(nstar2=20):
         """3 subhalos: 0 central of group 0 (low-res at 0.2 R200c), 1 its satellite, 2 central of a far group 1."""
-        n_sub = 3
+        return _FakeCat(groups={"pos": np.array([C, C + np.array([300.0, 0.0, 0.0])]), "r200c": np.array([R200, R200])},
+                        subs={"lentype": _lentype({4: 50}, {4: 50}, {4: nstar2})},
+                        group_of=[0, 0, 1], central=[True, False, True])
 
-        def __init__(self, nstar2=20):
-            lt = np.zeros((3, 6), dtype=np.int64)
-            lt[:, 4] = [50, 50, nstar2]
-            self.G = {"pos": np.array([C, C + np.array([300.0, 0.0, 0.0])]), "r200c": np.array([R200, R200])}
-            self.S = {"lentype": lt}
-
-        def g(self, k, default=None):
-            return self.G.get(k, default)
-
-        def s(self, k, default=None):
-            return self.S.get(k, default)
-
-        def group_of(self):
-            return np.array([0, 0, 1])
-
-        def is_central(self):
-            return np.array([True, False, True])
-
-    fl, why = con.clean_flags(snap, FakeCat2())
-    fl5, _ = con.clean_flags(snap, FakeCat2(nstar2=5))
+    fl, why = con.clean_flags(snap, fake2())
+    fl5, _ = con.clean_flags(snap, fake2(nstar2=5))
     c.check("clean centrals: contaminated group's central and its satellite out, far central in; < 10 stars out",
             fl is not None and list(fl) == [False, False, True] and list(fl5) == [False, False, False], why)
 
@@ -972,7 +975,8 @@ def _check_overview_no_bh(c, hist, units_, tmp):
     # a run without black holes: the history still has the BH keys, all zero (or NaN for the ratio)
     h = dict(hist)
     for k, v in hist.items():
-        if (k.startswith("bh_") or k == "eddington_ratio") and isinstance(v, np.ndarray) and v.dtype.kind == "f":
+        if (k.startswith("bh_") or k in ("eddington_ratio", "mbh_over_mstar")) and isinstance(v, np.ndarray) \
+                and v.dtype.kind == "f":
             h[k] = np.full_like(v, np.nan if k == "eddington_ratio" else 0.0)
     h_nokey = {k: v for k, v in h.items() if k != "bh_mdot_msun_per_yr"}   # as in a real run without BHs
     marked = []
@@ -991,16 +995,16 @@ def _check_overview_no_bh(c, hist, units_, tmp):
         evolution._no_black_holes = orig
     out = out if out2 else None
     empty_legend = [x for x in w if "No artists with labels" in str(x.message)]
-    c.check("fig 01 without black holes: panels (a), (f), (g) say 'no black holes' (both histories); "
+    c.check("fig 01 without black holes: panels (a), (f), (g), (l) say 'no black holes' (both histories); "
             "a run with BHs has none of these marks",
-            n_nobh == 6 and n_withbh == 0, "marks: %d without BHs, %d with" % (n_nobh, n_withbh))
+            n_nobh == 8 and n_withbh == 0, "marks: %d without BHs, %d with" % (n_nobh, n_withbh))
     c.check("fig 01 without black holes: drawn, and panel (f) gives no empty-legend warning",
             out is not None and not empty_legend, "%d legend warnings" % len(empty_legend))
 
 
 def _check_kinematics(c, snap):
     """Fig 22: spin angles and v/sigma on a synthetic rotating disc; bound-star slice and its order check."""
-    from . import galaxy, kinematics as kin
+    from . import kinematics as kin
 
     print("\n[kinematics]")
     rng = np.random.default_rng(11)
@@ -1055,23 +1059,14 @@ def _check_kinematics(c, snap):
     o = np.argsort(r)
     rh = r[o][np.searchsorted(np.cumsum(m[o]), 0.5 * m.sum())]
 
-    class FakeCat:
-        def __init__(self, rh_code):
-            lt = np.zeros((1, 6), dtype=np.int64)
-            lt[0, 4] = nst
-            hr = np.zeros((1, 6))
-            hr[0, 4] = rh_code
-            self.d = {"offsettype": np.zeros((1, 6), dtype=np.int64), "lentype": lt, "halfmassradtype": hr,
-                      "pos": cm[None, :]}
+    def fake(rh_code):
+        hr = np.zeros((1, 6))
+        hr[0, 4] = rh_code
+        return _FakeCat(subs={"offsettype": np.zeros((1, 6), dtype=np.int64), "lentype": _lentype({4: nst}),
+                              "halfmassradtype": hr, "pos": cm[None, :]})
 
-        def s(self, k, default=None):
-            return self.d.get(k, default)
-
-        def target_index(self):
-            return 0
-
-    good, why_g = kin.bound_stars(snap, FakeCat(rh), 0)
-    bad, why_b = kin.bound_stars(snap, FakeCat(3.0 * rh), 0)
+    good, why_g = kin.bound_stars(snap, fake(rh), 0)
+    bad, why_b = kin.bound_stars(snap, fake(3.0 * rh), 0)
     c.check("kinematics: bound-star slice accepted when half its mass lies within the catalogue r_1/2; "
             "refused (not group-ordered) when not",
             good is not None and np.isclose(good["rhalf_kpc"], rh * L) and bad is None and "group-ordered" in why_b,
@@ -1079,7 +1074,7 @@ def _check_kinematics(c, snap):
     with tempfile.TemporaryDirectory() as td:
         out = kin.plot(tab, os.path.join(td, "22_kinematics.png"), title="selftest", z=4.0)
         c.check("kinematics: fig 22 is drawn", out is not None and os.path.isfile(out))
-    rows = diagnostics.figure_applicability({}, {}, [], no_kinematics="catalogue has no SubhaloOffsetType")
+    rows = diagnostics.figure_applicability({}, {}, [], unavailable={"22": "catalogue has no SubhaloOffsetType"})
     r22 = [x for x in rows if x[0] == "22"]
     c.check("fig 22 is 'not applicable' with the reason when there is no bound-star slice",
             len(r22) == 1 and r22[0][2] == "n/a" and "SubhaloOffsetType" in r22[0][3], str(r22))
@@ -1359,8 +1354,7 @@ def _check_scenarios(c, tmp):
         kst_, kwhy_ = kin_.bound_stars(snap)
         rows = diagnostics.figure_applicability(
             summ, logs, [os.path.join(figdir, f) for f in os.listdir(figdir) if f.endswith((".png", ".html"))],
-            no_kinematics=None if kst_ is not None else kwhy_, no_density=None if kst_ is not None else kwhy_,
-            no_metallicity=_met_reasons(snap))
+            unavailable=dict(({} if kst_ is not None else {"22": kwhy_, "23": kwhy_}), **_met_reasons(snap)))
         status = {r[0]: r[2] for r in rows}
         c.check("%s: nothing reported as a real gap" % name,
                 not [k for k, v in status.items() if v == diagnostics.MISSING],

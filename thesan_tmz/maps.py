@@ -410,6 +410,43 @@ def galaxy_view_rows(snap, centre, extent_kpc, R=None, young_myr=YOUNG_MYR, spec
     return rows, notes
 
 
+def _shared(snap, key, compute):
+    """Figs 20 and 21 use the same spin axis, rows and images of one snapshot:
+    compute each once and keep it on the snapshot."""
+    cache = getattr(snap, "_cache", None)
+    if cache is None:
+        return compute()
+    key = ("galaxy_view",) + key
+    if key not in cache:
+        cache[key] = compute()
+    return cache[key]
+
+
+def _view_setup(snap, centre, extent_kpc, axis, young_myr, spectra_dir, uv_recipe):
+    """(axis, info, R, rows, notes, row key) shared by figs 20 and 21."""
+    c = tuple(np.asarray(centre, dtype=np.float64).tolist())
+    info = {"from": "given"}
+    if axis is None:
+        axis, info = _shared(snap, ("axis", c), lambda: galaxy_axis(snap, centre))
+    R = rotation_to_axis(axis) if axis is not None else np.eye(3)
+    from . import uv
+
+    p2, p3, _ = uv.table_paths(snap, spectra_dir)          # the tables in use are part of the key
+    rkey = (c, float(extent_kpc), tuple(np.round(R, 12).ravel().tolist()), float(young_myr), p2, p3, uv_recipe)
+    rows, notes = _shared(snap, ("rows",) + rkey,
+                          lambda: galaxy_view_rows(snap, centre, extent_kpc, R, young_myr, spectra_dir, uv_recipe))
+    return axis, info, R, rows, notes, rkey
+
+
+def _row_images(snap, rkey, row, extent_kpc, npix):
+    """Face-on and edge-on images of one row (shared by figs 20 and 21)."""
+    name, rel, w, h = row[:4]
+    return [_shared(snap, ("img",) + rkey + (name, pl, npix),
+                    lambda pl=pl, nm=nm: project_adaptive(rel, w, h, extent_kpc, npix, depth_kpc=extent_kpc,
+                                                          plane=pl, normal=nm)[0])
+            for pl, nm in (((0, 1), 2), ((0, 2), 1))]
+
+
 def plot_galaxy_view(snap, centre, outpath, extent_kpc=None, npix=400, title=None, axis=None, fallback_kpc=20.0,
                      young_myr=YOUNG_MYR, spectra_dir=None, uv_recipe="point"):
     """Fig 20: the galaxy face-on (left) and edge-on (right) in the frame of its
@@ -429,14 +466,9 @@ def plot_galaxy_view(snap, centre, outpath, extent_kpc=None, npix=400, title=Non
         extent_kpc, scale = galaxy_view_extent_kpc(snap, fallback_kpc)
     else:
         scale = "%.3g kpc (set by hand)" % extent_kpc
-    info = {"from": "given"}
-    if axis is None:
-        axis, info = galaxy_axis(snap, centre)
-    R = rotation_to_axis(axis) if axis is not None else np.eye(3)
+    axis, info, R, rows, notes, rkey = _view_setup(snap, centre, extent_kpc, axis, young_myr, spectra_dir, uv_recipe)
     frame = ("galaxy frame, spin from %s within %.3g kpc" % (info["from"], info.get("radius_kpc", np.nan))
              if axis is not None else "simulation frame (no galaxy spin found)")
-
-    rows, notes = galaxy_view_rows(snap, centre, extent_kpc, R, young_myr, spectra_dir, uv_recipe)
     if not rows:
         return None
 
@@ -451,9 +483,9 @@ def plot_galaxy_view(snap, centre, outpath, extent_kpc=None, npix=400, title=Non
     fig, ax = plt.subplots(nrow, 2, figsize=(8.0, 4.0 * nrow + 0.7), squeeze=False, facecolor=bg,
                            gridspec_kw=dict(wspace=0.015, hspace=0.015, left=0.01, right=0.99, bottom=0.01,
                                             top=1.0 - 0.7 / (4.0 * nrow + 0.7)))
-    for i, (name, rel, w, h, cbl) in enumerate(rows):
-        imgs = [project_adaptive(rel, w, h, extent_kpc, npix, depth_kpc=extent_kpc, plane=pl, normal=nm)[0]
-                for pl, nm in (((0, 1), 2), ((0, 2), 1))]
+    for i, row in enumerate(rows):
+        name, cbl = row[0], row[4]
+        imgs = _row_images(snap, rkey, row, extent_kpc, npix)
         if unit == "pc":                                     # surface densities per pc^2 on pc-sized frames
             imgs = [im * 1e-6 for im in imgs]
             cbl = cbl.replace("kpc$^{-2}$", "pc$^{-2}$")
@@ -509,14 +541,9 @@ def plot_gas_uv(snap, centre, outpath, extent_kpc=None, npix=400, title=None, ax
         extent_kpc, scale = galaxy_view_extent_kpc(snap, fallback_kpc)
     else:
         scale = "%.3g kpc (set by hand)" % extent_kpc
-    info = {"from": "given"}
-    if axis is None:
-        axis, info = galaxy_axis(snap, centre)
-    R = rotation_to_axis(axis) if axis is not None else np.eye(3)
+    axis, info, R, rows, notes, rkey = _view_setup(snap, centre, extent_kpc, axis, YOUNG_MYR, spectra_dir, uv_recipe)
     frame = ("galaxy frame, spin from %s within %.3g kpc" % (info["from"], info.get("radius_kpc", np.nan))
              if axis is not None else "simulation frame (no galaxy spin found)")
-    rows, notes = galaxy_view_rows(snap, centre, extent_kpc, R, young_myr=0.0, spectra_dir=spectra_dir,
-                                   uv_recipe=uv_recipe)
     byname = {r[0]: r for r in rows}
     gas = byname.get("gas")
     uvr = next((r for r in rows if "UV" in r[0]), None)
@@ -532,10 +559,8 @@ def plot_gas_uv(snap, centre, outpath, extent_kpc=None, npix=400, title=None, ax
     ext = (-f * extent_kpc, f * extent_kpc, -f * extent_kpc, f * extent_kpc)
     bar = scale_bar_length(2.0 * f * extent_kpc)
     views = (((0, 1), 2, "face-on"), ((0, 2), 1, "edge-on"))
-    gimg = [project_adaptive(gas[1], gas[2], gas[3], extent_kpc, npix, depth_kpc=extent_kpc, plane=pl, normal=nm)[0] * per
-            for pl, nm, _ in views]
-    uimg = [project_adaptive(uvr[1], uvr[2], uvr[3], extent_kpc, npix, depth_kpc=extent_kpc, plane=pl, normal=nm)[0] * per
-            for pl, nm, _ in views]
+    gimg = [im * per for im in _row_images(snap, rkey, gas, extent_kpc, npix)]
+    uimg = [im * per for im in _row_images(snap, rkey, uvr, extent_kpc, npix)]
     gtop = max(np.nanpercentile(g[g > 0], 99.9) if (g > 0).any() else 1.0 for g in gimg)
     utop = np.log10(max(np.nanpercentile(u_[u_ > 0], 99.9) if (u_ > 0).any() else 1.0 for u_ in uimg))
     gnorm = LogNorm(vmin=gtop * 10 ** -gas_dex, vmax=gtop)

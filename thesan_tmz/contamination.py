@@ -25,7 +25,6 @@ file's particles of one type.
 
 from __future__ import annotations
 
-import h5py
 import numpy as np
 
 from . import arepo_io as io
@@ -35,31 +34,6 @@ CHECK_RADII = (0.5, 1, 2, 3, 4, 5, 6, 8, 10)
 THRESHOLDS = (1e-4, 1e-3, 1e-2, 0.1)
 RMAX_R200 = 10.0
 NBINS = 400
-
-
-def iter_type(files, ptype, fields=("Coordinates", "Masses")):
-    """Yield (global offset, {field: array}) per snapshot file for one type;
-    masses from ``MassTable`` when the type has no ``Masses`` dataset."""
-    offset = 0
-    for fn in files:
-        with h5py.File(fn, "r") as f:
-            n = int(np.asarray(f["Header"].attrs["NumPart_ThisFile"])[ptype])
-            if n == 0:
-                continue
-            g = f["PartType%d" % ptype]
-            mt = float(np.asarray(f["Header"].attrs["MassTable"])[ptype])
-            d = {}
-            for k in fields:
-                d[k] = g[k][:] if (k != "Masses" or "Masses" in g) else np.full(n, mt)
-            yield offset, d
-            offset += n
-
-
-def radius(pos, centre, box):
-    d = np.asarray(pos, dtype=np.float64) - np.asarray(centre, dtype=np.float64)
-    if box:
-        d -= box * np.round(d / box)
-    return np.sqrt(np.sum(d * d, axis=1))
 
 
 def summarise(r, m):
@@ -81,7 +55,7 @@ def profile(chunks, lowres_types, centre, r200, box, rmax=RMAX_R200, nbins=NBINS
     rmin, rmin_type, rmin_index = np.inf, None, None
     low_r, low_m = [], []
     for t, off, pos, mass in chunks:
-        r = radius(pos, centre, box)
+        r = io.radius_from(pos, centre, box)
         x = r / r200
         sel = x < rmax
         h, _ = np.histogram(x[sel], bins=edges, weights=np.asarray(mass, dtype=np.float64)[sel])
@@ -155,14 +129,14 @@ def analyse(snap, lowres_types=LOWRES_TYPES):
             if fsub >= 0 and soff is not None and slen is not None:
                 s0 = int(np.asarray(soff)[fsub, t])
                 s1 = s0 + int(np.asarray(slen)[fsub, t])
-            for off, d in iter_type(snap.files, t):
+            for off, d in io.iter_type(snap.files, t):
                 n = len(d["Masses"])
                 for (lo, hi), out in (((a, b), mem_g), ((s0, s1), mem_s)):
                     if lo is None:
                         continue
                     x0, x1 = max(lo, off), min(hi, off + n)
                     if x1 > x0:
-                        out[0].append(radius(d["Coordinates"][x0 - off:x1 - off], centre, snap.boxsize))
+                        out[0].append(io.radius_from(d["Coordinates"][x0 - off:x1 - off], centre, snap.boxsize))
                         out[1].append(np.asarray(d["Masses"][x0 - off:x1 - off], dtype=np.float64))
         cc = lambda x: np.concatenate(x) if x else np.zeros(0)
         msub = float(np.asarray(cat.s("mass"))[fsub]) if fsub >= 0 else np.nan
@@ -181,7 +155,7 @@ def analyse(snap, lowres_types=LOWRES_TYPES):
         for t in range(len(ntot)):
             if ntot[t] == 0:
                 continue
-            for off, d in iter_type(snap.files, t):
+            for off, d in io.iter_type(snap.files, t):
                 yield t, off, d["Coordinates"], d["Masses"]
 
     pr = profile(chunks(), present, centre, r200, snap.boxsize)
@@ -227,7 +201,7 @@ def clean_flags(snap, cat=None, lowres_types=LOWRES_TYPES, min_star_particles=10
     gpos = np.asarray(gpos, dtype=np.float64)
     ntot = np.asarray(snap.header["NumPart_Total"], dtype=np.int64)
     lr = [d["Coordinates"] for t in lowres_types if t < len(ntot) and ntot[t] > 0
-          for _, d in iter_type(snap.files, t, fields=("Coordinates",))]
+          for _, d in io.iter_type(snap.files, t, fields=("Coordinates",))]
     dmin = np.full(len(r200), np.inf)
     if lr:
         pts = np.concatenate(lr).astype(np.float64)
@@ -238,7 +212,7 @@ def clean_flags(snap, cat=None, lowres_types=LOWRES_TYPES, min_star_particles=10
             tree = cKDTree(np.mod(pts, box), boxsize=box) if box else cKDTree(pts)
             dmin, _ = tree.query(np.mod(gpos, box) if box else gpos, k=1)
         except ImportError:
-            dmin = np.array([radius(pts, c, box).min() for c in gpos])
+            dmin = np.array([io.radius_from(pts, c, box).min() for c in gpos])
     clean_group = (r200 > 0) & (dmin > r200)
     ok = cat.is_central() & clean_group[np.clip(gn, 0, len(r200) - 1)] & (gn >= 0)
     lt = cat.s("lentype")
