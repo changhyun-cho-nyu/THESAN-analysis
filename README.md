@@ -129,6 +129,7 @@ projection maps.
 | `19_slr_mesh.png` | runs with `SLR_BH`: how well the mesh is refined around the target galaxy's most massive BH — cell size and mass vs distance against the refinement target, the fraction of cells on target, and slices through the actual Voronoi cells |
 | `20_galaxy_view.png` | the galaxy **face-on and edge-on** in its own spin frame; rows: all stars, stars < 10 Myr, intrinsic UV 1500 Å (L_ν at exactly 1500 Å from the spectrum tables; `--uv-recipe arepo` for AREPO's 1490–1510 Å average), gas; 3 stellar half-mass radii each side (a few hundred pc at z ~ 10; `--galaxy-extent` to set it). Black background, scale bar, a colour bar inside each row. A row that cannot be made is left out and the title says why |
 | `21_gas_uv.png` | gas in grey with the stars' intrinsic UV (1500 Å) on top, face-on and edge-on, same frame as fig 20; the UV fades out over its faintest decades, thin contours one per dex. Not applicable without the run's spectrum tables |
+| `22_kinematics.png` | (a) angle between the spins of the bound stars, all gas and star-forming gas, and of each to the galaxy's spin axis, in spheres of 0.5–5 stellar half-mass radii; (b) v/σ_z and v/σ_1D of all and young (< 10 Myr) bound stars in shells. Table in report.txt (KINEMATICS). Needs `SubhaloOffsetType` and a group-ordered snapshot (checked), else not applicable |
 | `bh_table.txt` | one row per BH in the last snapshot |
 | `report.txt` | the run's configuration, checks, and **which figures apply** |
 
