@@ -359,6 +359,7 @@ def _run(workdir=None, keep=False, make_figures=True):
     _check_overview_no_bh(c, hist, hist["_units"], tmp)
     _check_contamination(c, s_, tmp)
     _check_smhm_extrapolation(c, hist, s_, tmp)
+    _check_dust(c, s_)
     _check_density(c, tmp)
     _check_metallicity(c, tmp)
     c.check("history: cache round-trips", _cache_roundtrip_ok(out, hist))
@@ -888,6 +889,46 @@ def _lentype(*rows):
         for t, n in r.items():
             lt[i, t] = n
     return lt
+
+
+def _check_dust(c, snap):
+    """Dust-attenuated M_UV: Gnedin 2014 opacity x Vogelsberger+20 DTM(z), as THESAN."""
+    from . import uv
+
+    print("\n[dust]")
+    dtm = uv.dtm_vogelsberger20(np.array([6.0, 7.0, 8.0]))
+    c.check("dust: DTM(z) = 0.9 (z/2)^-1.92 gives 0.11, 0.08, 0.06 at z = 6, 7, 8 (Rahul's table)",
+            np.allclose(np.round(dtm, 2), [0.11, 0.08, 0.06]), str(dtm))
+    tau, d, m_att, ex = uv.dust_attenuation(-20.0, 1.0, 6.0)
+    want = 1.76e-21 * 5e21 * (0.9 * 3.0 ** -1.92) / 0.44
+    c.check("dust: tau_1500 = 1.76e-21 x Z* x 5e21 x DTM/0.44; M_att = M_int + 1.0857 tau; z = 6 not extrapolated",
+            np.isclose(tau, want) and np.isclose(m_att, -20.0 + 2.5 / np.log(10) * want) and not ex,
+            "tau %.4g" % tau)
+    t0, _, m0, _ = uv.dust_attenuation(-20.0, 0.0, 6.0)
+    c.check("dust: a metal-free galaxy is not attenuated; z = 12 flagged as extrapolated",
+            t0 == 0 and m0 == -20.0 and uv.dust_attenuation(-20.0, 1.0, 12.0)[3])
+    block = uv.dust_report(snap)
+    c.check("dust: report says why when the galaxy's bound stars cannot be picked (mock: no SubhaloOffsetType)",
+            "SubhaloOffsetType" in block, block)
+    # the full path with a stand-in catalogue: every mock star is "bound", Z* = solar
+    from . import catalog, kinematics
+
+    st = snap.part(io.PT_STAR, uv.stars_with_uv_fields())
+    nst = int(st["count"])
+    fake = _FakeCat(subs={"offsettype": np.zeros((1, 6), dtype=np.int64), "lentype": _lentype({4: nst}),
+                          "zstar_halfrad": [0.0127]})
+    orig = (catalog.load, kinematics.bound_stars)
+    catalog.load = lambda *a, **k: fake
+    kinematics.bound_stars = lambda *a, **k: ({}, "ok")
+    try:
+        block = uv.dust_report(snap)
+    finally:
+        catalog.load, kinematics.bound_stars = orig
+    m_int = float(uv.muv(uv.star_l_nu(snap, st)[0].sum()))
+    tau, dtm, m_att, _ = uv.dust_attenuation(m_int, 1.0, snap.z)
+    c.check("dust: report gives intrinsic M_UV of the bound stars, tau and attenuated M_UV for Z* = solar at the snapshot z",
+            ("M_UV intrinsic = %.2f" % m_int) in block and ("attenuated = %.2f" % m_att) in block
+            and ("tau_1500 = %.3g" % tau) in block, block)
 
 
 def _check_smhm_extrapolation(c, hist, snap, tmp):

@@ -371,6 +371,10 @@ def main(argv=None):
         if "25" not in unavailable:
             made += _try("iron", metallicity.plot_iron, mpop, fe, os.path.join(figdir, "25_iron.png"),
                          title=title, z=map_snap.z)
+        try:
+            reports.append(uv.dust_report(map_snap, args.spectra_dir, args.uv_recipe))
+        except Exception as exc:  # a report line only
+            reports.append("DUST-ATTENUATED M_UV\n  failed: %s: %s" % (type(exc).__name__, exc))
 
     # -- 6c. low-res contamination around the target (report only) --------
     if map_snap is not None:

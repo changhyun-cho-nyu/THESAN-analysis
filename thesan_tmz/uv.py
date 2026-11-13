@@ -269,8 +269,71 @@ def muv(l_nu_cgs):
         return -2.5 * np.log10(np.asarray(l_nu_cgs) / (4.0 * np.pi * (10.0 * 3.0856775814913673e18) ** 2)) - 48.6
 
 
+# ---------------------------------------------------------------------------
+# Dust attenuation of the target galaxy's UV (report line only)
+# ---------------------------------------------------------------------------
+#: Gnedin 2014 (ApJ 793, 29), App. B (checked 2026-11-12): tau_lambda = sigma_D(lambda) Z_* N_eff,
+#: sigma_D = 1.76e-21 cm^2 (1500 A / lambda)^1.1 (SMC dust normalised to solar), Z_* the stellar
+#: metallicity in solar units, N_eff ~ 5e21 cm^-2 fitted to z = 5-6
+GNEDIN14_SIGMA_1500 = 1.76e-21
+GNEDIN14_NEFF = 5.0e21
+#: THESAN (Kannan+22, Fig. 11) scales the opacity by DTM(z) / DTM_MW with the redshift-dependent
+#: dust-to-metal ratio of Vogelsberger+20, DTM = 0.9 (z/2)^-1.92 (calibrated z = 2-10; read via a
+#: summary of that paper), DTM_MW = 0.44
+DTM_MW = 0.44
+DTM_Z_RANGE = (2.0, 10.0)
+
+
+def dtm_vogelsberger20(z):
+    """Dust-to-metal ratio 0.9 (z/2)^-1.92 (0.11, 0.08, 0.06 at z = 6, 7, 8)."""
+    return 0.9 * (np.asarray(z, dtype=np.float64) / 2.0) ** -1.92
+
+
+def dust_attenuation(muv_intrinsic, zstar_solar, z):
+    """(tau_1500, DTM, attenuated M_UV, extrapolated) for a galaxy of stellar
+    metallicity ``zstar_solar`` (in solar units) at redshift ``z``:
+    tau = 1.76e-21 cm^2 x Z* x 5e21 cm^-2 x DTM(z)/0.44, M_att = M_int - 2.5 log10(exp(-tau))."""
+    dtm = float(dtm_vogelsberger20(z))
+    tau = GNEDIN14_SIGMA_1500 * float(zstar_solar) * GNEDIN14_NEFF * dtm / DTM_MW
+    return tau, dtm, float(muv_intrinsic) + 2.5 * tau / np.log(10.0), not (DTM_Z_RANGE[0] <= z <= DTM_Z_RANGE[1])
+
+
+def dust_report(snap, spectra_dir=None, recipe="point"):
+    """Report block: the target galaxy's intrinsic and dust-attenuated M_UV.
+    Intrinsic = :func:`star_l_nu` summed over the bound stars (the
+    ``SubhaloOffsetType`` slice, group order checked); Z* =
+    ``SubhaloStarMetallicityHalfRad`` / Z_sun (AREPO's value for the build)."""
+    from . import catalog, kinematics, metallicity
+
+    head = "DUST-ATTENUATED M_UV (Gnedin 2014 opacity x THESAN DTM(z) of Vogelsberger+20; target galaxy)"
+    bound, why = kinematics.bound_stars(snap)
+    if bound is None:
+        return head + "\n  " + why
+    cat = catalog.load(snap)
+    j = cat.target_index()
+    zs = cat.s("zstar_halfrad")
+    if zs is None:
+        return head + "\n  catalogue has no SubhaloStarMetallicityHalfRad"
+    o, n = int(np.asarray(cat.s("offsettype"))[j, io.PT_STAR]), int(np.asarray(cat.s("lentype"))[j, io.PT_STAR])
+    st = snap.part(io.PT_STAR, stars_with_uv_fields())
+    lnu, note = star_l_nu(snap, {k: np.asarray(v)[o:o + n] for k, v in st.items()
+                                 if np.ndim(v) > 0 and len(v) == st.get("count", -1)}, spectra_dir, recipe)
+    if lnu is None or not np.any(lnu > 0):
+        return head + "\n  no intrinsic UV: " + note
+    zsun = metallicity.solar_z(snap)
+    zstar = float(np.asarray(zs)[j]) / zsun
+    m_int = float(muv(lnu.sum()))
+    tau, dtm, m_att, extrap = dust_attenuation(m_int, zstar, snap.z)
+    partial = "; ".join(x.strip() for x in note.split(";") if "get no UV" in x)
+    return (head + "\n  z = %.2f: Z*/Z_sun = %.3g (SubhaloStarMetallicityHalfRad / %g), DTM = %.3g%s, tau_1500 = %.3g"
+            "\n  M_UV intrinsic = %.2f (%s recipe), attenuated = %.2f (A_UV = %.2f mag)%s"
+            % (snap.z, zstar, zsun, dtm, " (extrapolated: DTM law calibrated z = 2-10)" if extrap else "", tau,
+               m_int, recipe, m_att, m_att - m_int, (" -- PARTIAL, " + partial) if partial else ""))
+
+
 def stars_with_uv_fields():
     return ["Coordinates", "Masses", "GFM_StellarFormationTime", "GFM_InitialMass", "GFM_Metallicity", "IsPOPIII"]
 
 
-__all__ = ["point_lnu", "band_lambda", "SpectrumTable", "table_paths", "star_l_nu", "l_nu", "l_lambda", "muv", "io"]
+__all__ = ["point_lnu", "band_lambda", "SpectrumTable", "table_paths", "star_l_nu", "l_nu", "l_lambda", "muv",
+           "dust_attenuation", "dust_report", "io"]
