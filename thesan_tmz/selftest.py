@@ -957,6 +957,29 @@ def _check_smhm_extrapolation(c, hist, snap, tmp):
             10.0: {"Moster+13": "--", "Behroozi+13": "--"}}
     c.check("fig 05 SMHM: Moster+13 dashed beyond z = 4, Behroozi+13 beyond z = 8, solid inside",
             seen == want, str(seen))
+    # running median of the population (fig 05 b)
+    x = np.repeat([10.1, 10.3, 10.9, 11.2], [7, 3, 6, 4]) + 0.0
+    y = np.concatenate([np.arange(7.0), np.arange(3.0), 10 + np.arange(6.0), np.arange(4.0)])
+    cen, med = scaling.binned_median(x, y)
+    c.check("fig 05 SMHM: running median per 0.5 dex bin, only bins with >= 5 galaxies",
+            np.allclose(cen, [10.1, 10.9]) and np.allclose(med, [2.0, 12.5]), "%s %s" % (cen, med))
+    rng = np.random.default_rng(9)
+    n = 200
+    big = dict(count=n, z=6.0, mstar=10 ** rng.uniform(6, 10, n), mgroup_central=10 ** rng.uniform(9, 12, n),
+               subhalo_index=np.arange(n), target_index=0)
+    lines_ = {}
+
+    def grab2(fig, path, **kw):
+        lines_.update({ln.get_label(): ln for ln in fig.axes[1].get_lines()})
+        return orig(fig, path, **kw)
+
+    scaling.savefig = grab2
+    try:
+        scaling.plot_smhm(hist, hist["_units"], os.path.join(tmp, "smhm_median.png"), pop=big)
+    finally:
+        scaling.savefig = orig
+    med_ln = [ln for k, ln in lines_.items() if k.startswith("median")]
+    c.check("fig 05 SMHM: the median line is drawn through a population of 200 centrals", len(med_ln) == 1)
 
 
 def _check_contamination(c, snap_ref, tmp):

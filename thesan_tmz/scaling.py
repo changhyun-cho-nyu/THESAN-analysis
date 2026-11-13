@@ -107,13 +107,35 @@ def _track_colour(fig, ax, x, y, z, label=None, cmap="viridis", s=22):
     return sc
 
 
+#: running medians: bins this wide in log x, drawn only where a bin holds at least this many galaxies
+MEDIAN_BIN_DEX = 0.5
+MEDIAN_MIN_COUNT = 5
+
+
+def binned_median(logx, logy, width=MEDIAN_BIN_DEX, min_count=MEDIAN_MIN_COUNT):
+    """(median log x, median log y) per ``width``-dex bin of ``logx`` with at
+    least ``min_count`` points (bins start at a multiple of ``width``)."""
+    logx, logy = np.asarray(logx, dtype=np.float64), np.asarray(logy, dtype=np.float64)
+    if logx.size == 0:
+        return np.zeros(0), np.zeros(0)
+    edges = np.arange(np.floor(logx.min() / width) * width, logx.max() + width, width)
+    cen, med = [], []
+    for lo, hi in zip(edges[:-1], edges[1:]):
+        b = (logx >= lo) & (logx < hi)
+        if b.sum() >= min_count:
+            cen.append(np.median(logx[b]))
+            med.append(np.median(logy[b]))
+    return np.array(cen), np.array(med)
+
+
 def plot_smhm(hist, units, outpath, pop=None, title=None):
     """Stellar mass -- halo mass, with Moster+13 and Behroozi+13.
 
     (a) the target galaxy's track against M200c.  (b) every central galaxy of
     the final snapshot against its **FoF group mass** (``GroupMass``), one point
     per group (a satellite's group mass is its host's, so satellites are left
-    out), with the target galaxy as a large circle.  The published relations
+    out), with the target galaxy as a large circle and their running median
+    (:func:`binned_median`).  The published relations
     are against M200c/Mvir; the FoF mass is typically ~10-20 % larger.  A
     relation drawn at a redshift beyond the range its fit is constrained over
     (``obs.MOSTER13_Z_RANGE``, ``obs.BEHROOZI13_Z_RANGE``) is dashed and labelled
@@ -168,6 +190,10 @@ def plot_smhm(hist, units, outpath, pop=None, title=None):
             if ok.any():
                 xlo_b = min(xlo_b, 10 ** np.floor(np.log10(np.min(xg[ok]))))
                 xhi_b = max(xhi_b, 10 ** np.ceil(np.log10(np.max(xg[ok]))))
+                cen, med = binned_median(np.log10(xg[ok]), np.log10(pop["mstar"][ok]))
+                if len(cen):
+                    ax[1].plot(10 ** cen, 10 ** med, color=PALETTE["green"], lw=1.8,
+                               label=r"median (0.5 dex bins with $\geq$%d)" % MEDIAN_MIN_COUNT)
             ti = pop.get("target_index")
             hit = np.where(np.asarray(pop.get("subhalo_index", [])) == ti)[0] if ti is not None else []
             if len(hit) and np.isfinite(xg[hit[0]]):

@@ -112,7 +112,7 @@ projection maps.
 | `02_bh_growth.png` | total BH mass and accretion rate, BH count and mergers, the most massive BHs |
 | `03_star_formation.png` | star formation history and stellar growth |
 | `04_energy.png` | energy budget of the box; AGN energy released and deposited, per channel, against the expected value |
-| `05_scaling_*.png` | the galaxy against published relations (M★–M_halo, M_BH–M★, main sequence, MZR, M_BH–σ, …); the M★–M_halo population panel uses the FoF group mass, marks the target galaxy, and draws Moster+13 / Behroozi+13 dashed beyond the redshifts their fits cover (z ≤ 4 / ≤ 8); the MZR has (a) the galaxy's track vs z = 0 relations, (b) the clean centrals' gas 12+log(O/H) from the oxygen fraction vs Curti+24, Nakajima+23, Chemerynska+24, (c) dust-to-gas vs O/H |
+| `05_scaling_*.png` | the galaxy against published relations (M★–M_halo, M_BH–M★, main sequence, MZR, M_BH–σ, …); the M★–M_halo population panel uses the FoF group mass, marks the target galaxy, shows the population's running median, and draws Moster+13 / Behroozi+13 dashed beyond the redshifts their fits cover (z ≤ 4 / ≤ 8); the MZR has (a) the galaxy's track vs z = 0 relations, (b) the clean centrals' gas 12+log(O/H) from the oxygen fraction vs Curti+24, Nakajima+23, Chemerynska+24, (c) dust-to-gas vs O/H |
 | `06_injection_counters.png` | per-step injected energy of the collimated feedback (needs `--stdout`) |
 | `07_axis_stability.png` | how much the jet axis wanders (runs with `BH_BIPOLAR_FEEDBACK`) |
 | `08_accretion_internals.png` | accretion-model internals: raw vs capped rate, Eddington ratio (pre-cap demand and actual, up to 100× Eddington), BH environment |
