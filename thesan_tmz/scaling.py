@@ -114,7 +114,10 @@ def plot_smhm(hist, units, outpath, pop=None, title=None):
     the final snapshot against its **FoF group mass** (``GroupMass``), one point
     per group (a satellite's group mass is its host's, so satellites are left
     out), with the target galaxy as a large circle.  The published relations
-    are against M200c/Mvir; the FoF mass is typically ~10-20 % larger."""
+    are against M200c/Mvir; the FoF mass is typically ~10-20 % larger.  A
+    relation drawn at a redshift beyond the range its fit is constrained over
+    (``obs.MOSTER13_Z_RANGE``, ``obs.BEHROOZI13_Z_RANGE``) is dashed and labelled
+    "extrapolated"."""
     R = float(np.max(hist["_radii_kpc"]))
     mh = hist.get("mhalo_msun")
     ms = history.key(hist, "mstar", R)
@@ -129,12 +132,15 @@ def plot_smhm(hist, units, outpath, pop=None, title=None):
     # panel (b) is one snapshot, so anchor them at that snapshot's redshift.
     z_pop = float(pop["z"]) if (pop is not None and pop.get("count")) else float(np.nanmin(hist["z"]))
     for a, zref in zip(ax, (0.0, z_pop)):
-        for f, name, col in (
-            (obs.moster13_smhm, "Moster+13", PALETTE["blue"]),
-            (obs.behroozi13_smhm, "Behroozi+13", PALETTE["vermillion"]),
+        for f, name, col, zrange in (
+            (obs.moster13_smhm, "Moster+13", PALETTE["blue"], obs.MOSTER13_Z_RANGE),
+            (obs.behroozi13_smhm, "Behroozi+13", PALETTE["vermillion"], obs.BEHROOZI13_Z_RANGE),
         ):
             y = f(grid, z=zref)
-            a.plot(grid, y, color=col, lw=1.3, label=r"%s ($z=%.1f$)" % (name, zref))
+            # dashed where the fit is used beyond the redshifts its data constrain
+            extrap = not (zrange[0] <= zref <= zrange[1])
+            a.plot(grid, y, color=col, lw=1.3, ls="--" if extrap else "-",
+                   label=r"%s ($z=%.1f$%s)" % (name, zref, r", extrapolated: fit to $z \leq %g$" % zrange[1] if extrap else ""))
             lo, hi = obs.scatter_band(y, 0.2)
             shade_band(a, grid, lo, hi, col, alpha=0.12)
         a.plot(grid, grid * units.OmegaBaryon / units.Omega0, color=PALETTE["grey"], ls=":", lw=1.0, label=r"$f_{\rm b}\,M_{\rm h}$")

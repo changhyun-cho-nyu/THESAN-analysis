@@ -358,6 +358,7 @@ def _run(workdir=None, keep=False, make_figures=True):
     _check_map_snap(c, root, tmp)
     _check_overview_no_bh(c, hist, hist["_units"], tmp)
     _check_contamination(c, s_, tmp)
+    _check_smhm_extrapolation(c, hist, s_, tmp)
     _check_density(c, tmp)
     _check_metallicity(c, tmp)
     c.check("history: cache round-trips", _cache_roundtrip_ok(out, hist))
@@ -887,6 +888,34 @@ def _lentype(*rows):
         for t, n in r.items():
             lt[i, t] = n
     return lt
+
+
+def _check_smhm_extrapolation(c, hist, snap, tmp):
+    """Fig 05 SMHM (b): a relation drawn beyond the redshifts its fit is constrained over is dashed."""
+    from . import scaling
+
+    print("\n[SMHM reference curves]")
+    pop = scaling.population_from_catalog(snap)
+    seen = {}
+    orig = scaling.savefig
+
+    def grab(fig, path, **kw):
+        a = fig.axes[1]
+        seen[pop["z"]] = {ln.get_label().split(" (")[0]: ln.get_linestyle() for ln in a.get_lines()
+                          if ln.get_label().startswith(("Moster", "Behroozi"))}
+        return orig(fig, path, **kw)
+
+    scaling.savefig = grab
+    try:
+        for z in (3.0, 6.0, 10.0):
+            pop["z"] = z
+            scaling.plot_smhm(hist, hist["_units"], os.path.join(tmp, "smhm_z%g.png" % z), pop=pop)
+    finally:
+        scaling.savefig = orig
+    want = {3.0: {"Moster+13": "-", "Behroozi+13": "-"}, 6.0: {"Moster+13": "--", "Behroozi+13": "-"},
+            10.0: {"Moster+13": "--", "Behroozi+13": "--"}}
+    c.check("fig 05 SMHM: Moster+13 dashed beyond z = 4, Behroozi+13 beyond z = 8, solid inside",
+            seen == want, str(seen))
 
 
 def _check_contamination(c, snap_ref, tmp):

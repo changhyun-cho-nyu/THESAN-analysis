@@ -49,6 +49,13 @@ import numpy as np
 MOSTER13 = dict(M10=11.590, M11=1.195, N10=0.0351, N11=-0.0247, beta10=1.376, beta11=-0.826, gamma10=0.608, gamma11=0.329)
 
 
+#: redshifts over which the SMHM fits are constrained by data (checked 2026-11-12):
+#: Moster+13 z = 0-4 (abstract, Sec. 2.2, 3.2); Behroozi+13 z = 0-8 (abstract, Sec. V; beyond is
+#: extrapolation, App. B).  Neither paper states a halo-mass limit.
+MOSTER13_Z_RANGE = (0.0, 4.0)
+BEHROOZI13_Z_RANGE = (0.0, 8.0)
+
+
 def moster13_smhm(Mhalo, z=0.0, params=None):
     """Stellar mass from halo mass, Moster+2013 Eq. 2 with Eqs. 11-14.
 

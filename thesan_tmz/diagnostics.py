@@ -599,8 +599,9 @@ def plot_accretion_internals(details, units, outpath, params=None, summary=None,
     a.set_ylabel("rows")
     label_panel(a, "(b) Eddington ratio")
 
-    # (c) the BH's environment.  The torque-limited log replaces the sound
-    # speed with f_disk/f_gas, so fall back to rho against mdot there.
+    # (c) the BH's environment.  The torque-limited log has no sound speed,
+    # and the current alpha-disc log has only the cold-gas one (c_cold), so
+    # fall back to rho against mdot for both.
     a = ax[0, 2]
     if "csnd" in details:
         good = (details["rho"] > 0) & (details["csnd"] > 0)

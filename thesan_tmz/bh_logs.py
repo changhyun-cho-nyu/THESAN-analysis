@@ -54,17 +54,37 @@ BLACKHOLES_COLS = [
     "mdot_eddington",  # sum of Mdot/Mdot_Edd
 ]
 
-#: blackhole_details, default (Bondi / freefall / ...) -- mdot.cc:431
+#: blackhole_details, default (Bondi / freefall / ...) -- mdot.cc:453
 DETAILS_COLS_DEFAULT = ["id", "time", "bh_mass", "mdot", "rho", "csnd"]
 
-#: blackhole_details with BH_ALPHA_DISK_ACCRETION -- mdot.cc:521.
-#: Same six columns as the default, plus Omega and the Toomre Q.
-DETAILS_COLS_ALPHA = DETAILS_COLS_DEFAULT + ["omega", "toomre_q"]
+#: blackhole_details with BH_ALPHA_DISK_ACCRETION -- mdot.cc:556 (AREPO
+#: 96552a745d, 2026-11-09 onwards).  11 columns.  Column 6 is the sound speed
+#: of the *cold* gas, not the BH's own csnd, so it gets its own name; then
+#: Omega, the Toomre Q, the cold-gas surface density, the cold-gas fraction
+#: and the Bondi rate the disc rate is compared against.
+DETAILS_COLS_ALPHA = ["id", "time", "bh_mass", "mdot", "rho", "c_cold", "omega", "toomre_q", "sigma_cold", "f_cold", "mdot_bondi"]
 
-#: blackhole_details with BH_TORQUE_LIMITED_ACCRETION -- mdot.cc:637.
-#: NOTE: this one does *not* write the sound speed -- f_disk and f_gas take
-#: the place of the csnd column, so it is 7 columns, not 8.
-DETAILS_COLS_TORQUE = ["id", "time", "bh_mass", "mdot", "rho", "f_disk", "f_gas"]
+#: blackhole_details with BH_TORQUE_LIMITED_ACCRETION -- mdot.cc:672 (AREPO
+#: 96552a745d onwards).  10 columns, no sound speed: f_disk, f_gas, then the
+#: disc gas mass, disc stellar mass and total enclosed mass.
+DETAILS_COLS_TORQUE = ["id", "time", "bh_mass", "mdot", "rho", "f_disk", "f_gas", "m_gas_disk", "m_star_disk", "m_tot"]
+
+#: Older AREPO builds (before 96552a745d) wrote shorter logs; kept so those
+#: runs still read.  Alpha: the default six columns plus Omega and Q (8).
+#: Torque: f_disk and f_gas in place of csnd (7).
+DETAILS_COLS_ALPHA_OLD = DETAILS_COLS_DEFAULT + ["omega", "toomre_q"]
+DETAILS_COLS_TORQUE_OLD = ["id", "time", "bh_mass", "mdot", "rho", "f_disk", "f_gas"]
+
+#: column count -> (layout, columns).  Every count is distinct, so the file
+#: alone says which model wrote it.  The layout name stays 'alpha' / 'torque'
+#: for both versions; the columns differ.
+DETAILS_LAYOUTS = {
+    6: ("default", DETAILS_COLS_DEFAULT),
+    8: ("alpha", DETAILS_COLS_ALPHA_OLD),
+    11: ("alpha", DETAILS_COLS_ALPHA),
+    7: ("torque", DETAILS_COLS_TORQUE_OLD),
+    10: ("torque", DETAILS_COLS_TORQUE),
+}
 
 #: blackhole_bipolar -- mdot.cc:438
 BIPOLAR_COLS = [
@@ -175,9 +195,10 @@ def read_blackholes_txt(output_dir):
 def detect_details_layout(output_dir):
     """Return ('default'|'alpha'|'torque', columns) by counting columns.
 
-    The three accretion models write 6, 8 and 7 columns respectively, so the
-    layout is unambiguous from the file alone -- no need to know which
-    Config.sh options were on.
+    See DETAILS_LAYOUTS: default 6, alpha 11 (8 before AREPO 96552a745d),
+    torque 10 (7 before).  The counts are all different, so the layout is
+    unambiguous from the file alone -- no need to know which Config.sh
+    options were on.
     """
     files = sorted(glob.glob(os.path.join(output_dir, "blackhole_details", "blackhole_details_*.txt")))
     for p in files:
@@ -185,13 +206,12 @@ def detect_details_layout(output_dir):
             for line in fh:
                 if line.startswith("BH="):
                     n = len(line.split())
-                    if n == 6:
-                        return "default", DETAILS_COLS_DEFAULT
-                    if n == 8:
-                        return "alpha", DETAILS_COLS_ALPHA
-                    if n == 7:
-                        return "torque", DETAILS_COLS_TORQUE
-                    raise ValueError("unexpected blackhole_details column count: %d" % n)
+                    if n in DETAILS_LAYOUTS:
+                        return DETAILS_LAYOUTS[n]
+                    raise ValueError(
+                        "unexpected blackhole_details column count: %d (known: %s) in %s"
+                        % (n, ", ".join(str(k) for k in sorted(DETAILS_LAYOUTS)), p)
+                    )
     return "default", DETAILS_COLS_DEFAULT
 
 
@@ -199,7 +219,8 @@ def read_bh_details(output_dir, layout=None):
     """Concatenate every rank's ``blackhole_details_*.txt``.
 
     Returns a dict of arrays with the columns for the detected layout, sorted
-    by (id, time).  ``layout`` may be forced to 'default' / 'alpha' / 'torque'.
+    by (id, time).  ``layout`` may be forced to 'default' / 'alpha' / 'torque';
+    a forced 'alpha' / 'torque' means the current (11 / 10 column) logs.
     """
     if layout is None:
         layout, cols = detect_details_layout(output_dir)
