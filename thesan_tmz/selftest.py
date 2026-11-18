@@ -360,6 +360,7 @@ def _run(workdir=None, keep=False, make_figures=True):
     _check_contamination(c, s_, tmp)
     _check_smhm_extrapolation(c, hist, s_, tmp)
     _check_dust(c, s_)
+    _check_coretrack(c, tmp)
     _check_density(c, tmp)
     _check_metallicity(c, tmp)
     c.check("history: cache round-trips", _cache_roundtrip_ok(out, hist))
@@ -889,6 +890,123 @@ def _lentype(*rows):
         for t, n in r.items():
             lt[i, t] = n
     return lt
+
+
+def _two_halo_run(root, swaps, catalogue_only=()):
+    """A tiny run with two static DM halos in one FoF group, A (30 000 particles)
+    and B (12 000), 300 ckpc/h apart.  ``swaps[k]`` True gives B the label
+    "Subhalo 0" at snapshot k (A otherwise).  Snapshots in ``catalogue_only``
+    get a catalogue but no particles.  Returns (output dir, A's centre)."""
+    import h5py
+
+    out = os.path.join(root, "output")
+    os.makedirs(out, exist_ok=True)
+    rng = np.random.default_rng(21)
+    box, mdm = 10000.0, 1e-5
+    xa, xb = np.array([5000.0, 5000.0, 5000.0]), np.array([5300.0, 5000.0, 5000.0])
+
+    def halo(n, a):
+        u = rng.uniform(0.0, 0.9, n)
+        r = a * np.sqrt(u) / (1 - np.sqrt(u))
+        v = rng.normal(size=(n, 3))
+        return v / np.linalg.norm(v, axis=1)[:, None] * r[:, None]
+
+    pa, pb = xa + halo(30000, 8.0), xb + halo(12000, 6.0)
+    ia, ib = np.arange(1, 30001, dtype=np.uint64), np.arange(100001, 112001, dtype=np.uint64)
+    mb_a = ia[np.argmin(np.linalg.norm(pa - xa, axis=1))]
+    mb_b = ib[np.argmin(np.linalg.norm(pb - xb, axis=1))]
+    par = dict(UnitLength_in_cm=3.085678e21, UnitMass_in_g=1.989e43, UnitVelocity_in_cm_per_s=1e5, HubbleParam=0.6774,
+               Omega0=0.3089, OmegaLambda=0.6911, OmegaBaryon=0.0486, ComovingIntegrationOn=1, BoxSize=box)
+    zs = np.linspace(8.0, 4.0, len(swaps))
+    for k, (z, sw) in enumerate(zip(zs, swaps)):
+        a = 1.0 / (1.0 + z)
+        first, second = ((pb, ib, xb, mb_b), (pa, ia, xa, mb_a)) if sw else ((pa, ia, xa, mb_a), (pb, ib, xb, mb_b))
+        n1, n2 = len(first[1]), len(second[1])
+        if k not in catalogue_only:
+            d = os.path.join(out, "snapdir_%03d" % k)
+            os.makedirs(d, exist_ok=True)
+            with h5py.File(os.path.join(d, "snap_%03d.0.hdf5" % k), "w") as f:
+                h = f.create_group("Header")
+                h.attrs["NumPart_ThisFile"] = np.array([0, n1 + n2, 0, 0, 0, 0])
+                h.attrs["NumPart_Total"] = np.array([0, n1 + n2, 0, 0, 0, 0], dtype=np.uint32)
+                h.attrs["NumPart_Total_HighWord"] = np.zeros(6, dtype=np.uint32)
+                h.attrs["MassTable"] = np.array([0, mdm, 0, 0, 0, 0])
+                for kk, vv in dict(Time=a, Redshift=z, BoxSize=box, NumFilesPerSnapshot=1, HubbleParam=0.6774,
+                                   Omega0=0.3089, OmegaLambda=0.6911).items():
+                    h.attrs[kk] = vv
+                pg = f.create_group("Parameters")
+                for kk, vv in par.items():
+                    pg.attrs[kk] = vv
+                g = f.create_group("PartType1")
+                g["Coordinates"] = np.vstack([first[0], second[0]]).astype(np.float32)
+                g["ParticleIDs"] = np.concatenate([first[1], second[1]])
+        d = os.path.join(out, "groups_%03d" % k)
+        os.makedirs(d, exist_ok=True)
+        with h5py.File(os.path.join(d, "fof_subhalo_tab_%03d.0.hdf5" % k), "w") as f:
+            h = f.create_group("Header")
+            for kk, vv in dict(Time=a, Redshift=z, BoxSize=box, NumFiles=1, Ngroups_ThisFile=1, Ngroups_Total=1,
+                               Nsubhalos_ThisFile=2, Nsubhalos_Total=2).items():
+                h.attrs[kk] = vv
+            pg = f.create_group("Parameters")
+            for kk, vv in par.items():
+                pg.attrs[kk] = vv
+            lt, ot, mt = np.zeros((2, 6), dtype=np.int64), np.zeros((2, 6), dtype=np.int64), np.zeros((2, 6))
+            lt[:, 1], ot[:, 1], mt[:, 1] = [n1, n2], [0, n1], [n1 * mdm, n2 * mdm]
+            G = f.create_group("Group")
+            G["GroupFirstSub"], G["GroupPos"] = np.array([0], dtype=np.int32), first[2][None, :]
+            G["Group_R_Crit200"], G["Group_M_Crit200"] = np.array([40.0]), np.array([(n1 + n2) * mdm])
+            G["GroupMass"], G["GroupLenType"] = np.array([(n1 + n2) * mdm]), lt.sum(axis=0)[None, :]
+            S = f.create_group("Subhalo")
+            S["SubhaloPos"] = np.vstack([first[2], second[2]])
+            S["SubhaloLenType"], S["SubhaloOffsetType"], S["SubhaloMassType"] = lt, ot, mt
+            S["SubhaloMass"], S["SubhaloGroupNr"] = mt.sum(axis=1), np.array([0, 0], dtype=np.int32)
+            S["SubhaloIDMostbound"] = np.array([first[3], second[3]], dtype=np.uint64)
+    return out, xa
+
+
+def _check_coretrack(c, tmp):
+    """Core track: follows the heavier halo through SUBFIND label swaps; writes only figures/."""
+    from . import coretrack
+
+    print("\n[core track]")
+    swaps = [False, True, False, True, True, False]          # snapshot 3 has a catalogue only
+    root = os.path.join(tmp, "two_halo")
+    out, xa = _two_halo_run(root, swaps, catalogue_only=(3,))
+    before = sorted(os.listdir(out))
+    tr = coretrack.track(out, verbose=False)
+    want_sub = [1 if sw else 0 for sw in swaps]               # A's label at each snapshot
+    cen_off = np.linalg.norm(tr["centre"][tr["method"] == 0] - xa, axis=1)
+    c.check("core track: follows halo A through every label swap (group 0's central would be B at 3 of 6)",
+            list(tr["snaps"]) == list(range(6)) and list(tr["sub"]) == want_sub, "sub %s" % list(tr["sub"]))
+    c.check("core track: catalogue-only snapshot 3 filled by the most-bound ID match; anchors centred on A's DM peak",
+            tr["method"][3] == 3 and np.all(cen_off < 2.0), "method %s, centre offsets %s"
+            % (list(tr["method"]), np.round(cen_off, 2)))
+    figdir = os.path.join(root, "figures")
+    mp, path = coretrack.load_or_build(out, figdir, verbose=False)
+    t1 = os.path.getmtime(path)
+    mp2, path2 = coretrack.load_or_build(out, figdir, verbose=False)
+    c.check("core track: written to figures/core_track.hdf5, reused on the next run, output/ untouched",
+            path == os.path.join(figdir, "core_track.hdf5") and path2 == path and os.path.getmtime(path2) == t1
+            and sorted(os.listdir(out)) == before and mp[5][0] == 0 and mp[1][0] == 1)
+    from . import galaxy, history
+
+    s1 = io.Snapshot(out, 1)                                   # B is "Subhalo 0" here
+    c_old, _ = galaxy.auto_centre(s1)
+    c_new, i_new = galaxy.auto_centre(s1, track=mp[1])
+    c.check("history centring: with the track the target galaxy is A (old way: B's position at a swapped snapshot)",
+            np.linalg.norm(c_old - xa) > 250 and np.linalg.norm(c_new - xa) < 2 and i_new["subhalo_index"] == 1
+            and i_new["method"] == "track", "old %s, new %s" % (np.round(c_old, 1), np.round(c_new, 1)))
+    ch = history.build_catalog_history(out, track=mp, verbose=False)
+    ch0 = history.build_catalog_history(out, verbose=False)
+    c.check("catalogue history: with the track the galaxy's DM mass is A's at every snapshot (old: A and B alternate)",
+            np.allclose(ch["mdm_msun"], ch["mdm_msun"][-1]) and len(np.unique(np.round(ch0["mdm_msun"], -6))) == 2)
+    import h5py
+
+    with h5py.File(path, "r+") as f:                           # pretend an older code version wrote it
+        f["Header"].attrs["Code"] = "older"
+    coretrack.load_or_build(out, figdir, verbose=False)
+    c.check("core track: a file from other code is kept as core_track_end005_older.hdf5, not overwritten",
+            os.path.exists(os.path.join(figdir, "core_track_end005_older.hdf5")) and os.path.exists(path))
 
 
 def _check_dust(c, snap):

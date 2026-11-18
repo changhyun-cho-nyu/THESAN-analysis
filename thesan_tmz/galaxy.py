@@ -59,7 +59,7 @@ def target_bh_radius_kpc(props):
     return float(rlim)
 
 
-def centre_on_bh(snap, bh_id=None, cat=None, in_target_galaxy=True):
+def centre_on_bh(snap, bh_id=None, cat=None, in_target_galaxy=True, target_subhalo=None):
     """Centre on a black hole: the most massive one, or a specified ID.
 
     ``in_target_galaxy`` first asks the Subfind catalogue which galaxy this run
@@ -71,6 +71,11 @@ def centre_on_bh(snap, bh_id=None, cat=None, in_target_galaxy=True):
     jumps to a different object.  The cut is generous (five stellar half-mass
     radii) because a black hole that has been kicked or is still sinking is
     still the black hole of that galaxy.
+
+    ``target_subhalo`` names the galaxy (a subhalo index, e.g. from the
+    core track) instead of asking the catalogue; then a galaxy without a black
+    hole gives no centre here (the caller moves on to the next method) rather
+    than the most massive black hole of some other galaxy.
 
     Returns ``(centre_code, info)``.  ``info`` carries the ID and BH_Mass so
     the caller can record which object the figure is about.
@@ -87,7 +92,7 @@ def centre_on_bh(snap, bh_id=None, cat=None, in_target_galaxy=True):
             if cat is None:
                 cat = cat_mod.load(snap)
             if cat is not None and cat.n_sub:
-                j = cat.target_index()
+                j = cat.target_index() if target_subhalo is None else int(target_subhalo)
                 pos = cat.s("pos")
                 if j is not None and pos is not None:
                     L = snap.units.length_to_kpc(snap.a)
@@ -110,6 +115,8 @@ def centre_on_bh(snap, bh_id=None, cat=None, in_target_galaxy=True):
             pass
 
     if bh_id is None:
+        if "host_subhalo_index" not in host and target_subhalo is not None:
+            return None, {"reason": "no black hole in the tracked galaxy (subhalo %d)" % int(target_subhalo)}
         if "host_subhalo_index" not in host:
             # No BH inside the target galaxy, so the fallback is the most
             # massive BH anywhere -- which in a zoom is often one seeded in
@@ -288,7 +295,7 @@ def centre_on_densest_mass(snap, parttype=None, refine=True):
     return None, {"reason": "no particles with coordinates"}
 
 
-def auto_centre(snap, prefer=("bh", "subhalo", "group", "potmin", "densest"), bh_id=None, group_index=0):
+def auto_centre(snap, prefer=("bh", "subhalo", "group", "potmin", "densest"), bh_id=None, group_index=0, track=None):
     """Try centring strategies in order and return the first that works.
 
     Returns ``(centre_code, info)`` where ``info['method']`` records which one
@@ -297,9 +304,20 @@ def auto_centre(snap, prefer=("bh", "subhalo", "group", "potmin", "densest"), bh
 
     On failure ``info['reason']`` names *each* method and why it declined,
     rather than a single unhelpful "all methods failed".
+
+    ``track`` = (subhalo index, DM-peak centre) of the galaxy in this snapshot
+    from :mod:`coretrack`.  Then that subhalo is the target galaxy: "bh" takes
+    its most massive black hole, and "subhalo" becomes the tracked DM peak
+    (method "track") instead of group 0's central.
     """
     tried = []
     for method in prefer:
+        if track is not None and method in ("subhalo", "subhalo_bh") and bh_id is None:
+            cat = cat_mod.load(snap)
+            info = {"subhalo_index": int(track[0]), "selection": "core track", "method": "track"}
+            if cat is not None:
+                info["_catalog"] = cat
+            return np.asarray(track[1], dtype=np.float64), info
         if method in ("subhalo", "subhalo_bh"):
             try:
                 c, info = centre_on_subhalo(
@@ -309,7 +327,7 @@ def auto_centre(snap, prefer=("bh", "subhalo", "group", "potmin", "densest"), bh
             except (FileNotFoundError, OSError) as exc:
                 c, info = None, {"reason": str(exc)}
         elif method == "bh":
-            c, info = centre_on_bh(snap, bh_id=bh_id)
+            c, info = centre_on_bh(snap, bh_id=bh_id, target_subhalo=track[0] if track is not None else None)
         elif method == "group":
             try:
                 c, info = centre_on_group(snap, group_index=group_index)

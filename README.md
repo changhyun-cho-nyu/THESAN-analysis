@@ -134,12 +134,29 @@ projection maps.
 | `24_stellar_mzr.png` | Z★ within R½ vs M★ of the clean centrals (median line) and the galaxy (gas for reference); Z★/Z_gas. Needs `SubhaloStarMetallicityHalfRad` |
 | `25_iron.png` | (a) mass-weighted stellar ⟨[Fe/H]⟩ vs M★ of the clean centrals and the galaxy against Kirby+13 (z = 0 Local Group; dashed outside its mass range); (b) gas-phase [Fe/H] within R½; (c) [O/Fe] vs [Fe/H] of the galaxy's bound stars. Panels without their fields say so |
 | `bh_table.txt` | one row per BH in the last snapshot |
+| `core_track.hdf5` | the main galaxy followed through time from its dark-matter core (see below); never written into `output/` |
 | `report.txt` | the run's configuration, checks, and **which figures apply**; also KINEMATICS (fig 22's numbers), DENSITY (fig 23's: r_e, Σ_eff, Σ(<100 pc), ρ(<10/20/50 pc)), METALLICITY (the galaxy's O/H, Z★, ⟨[Fe/H]⟩★ against Kirby+13, [O/Fe]; the clean centrals' offsets from Kirby+13), DUST-ATTENUATED M_UV (the galaxy's intrinsic and attenuated M_UV: Gnedin 2014 opacity × the THESAN dust-to-metal ratio DTM(z) of Vogelsberger+20) and CONTAMINATION: low-res (type 2 and 3) particles around the target's FoF group — members of the group and its main subhalo, the nearest one (clean-sphere radius in R200c), counts and the low-res mass fraction within 0.5–10 R200c, and where that fraction first exceeds 1e-4 … 0.1. Uses the map snapshot (`--map-snap`) |
 
 **Not every run produces every figure, and that is expected.** The end of
 `report.txt` (also printed on screen) labels each figure as *produced*, *not
 applicable* to this build (with the reason), *skipped* on request, or **MISSING**.
 Only MISSING means something went wrong.
+
+**The main galaxy is followed through time, not taken as "group 0's central".**
+A FoF group can hold two massive halos that have not merged yet, and SUBFIND
+then gives the label "Subhalo 0" to one or the other from snapshot to snapshot,
+so a history built from group 0's central jumps between galaxies. `run_all`
+therefore first tracks the final central back in time from its dark-matter core
+(the method of Rahul Kannan's `core_track.py`, same parameters: DM density peak,
+own M200, tracers within ½ R200, the 200 innermost DM particles, ≥ 15 % share,
+3 ckpc/h; "more massive before the merger" at mergers). The result is
+`figures/core_track.hdf5` (a `tree.hdf5`-style file); the histories then take
+that subhalo as the galaxy at each snapshot, its most massive BH as its BH, and
+the tracked DM peak as the centre when it has no BH. The file is reused while
+the run has no new snapshots; when it is out of date the old one is kept as
+`core_track_end<NNN>_<code>.hdf5`. It needs group-ordered snapshots
+(`SubhaloOffsetType`) and equal-mass DM; without them `run_all` says so and uses
+group 0's central as before. `report.txt` has a MAIN-GALAXY TRACK block.
 
 **BHs in low-resolution gas are hidden.** In a zoom, a BH can be seeded at the
 edge of the high-res region inside a heavy low-res gas cell and then grow into a

@@ -22,7 +22,7 @@ import traceback
 import numpy as np
 
 from . import arepo_io as io
-from . import bh_logs, bh_population, catalog, contamination, density, diagnostics, metallicity, evolution, galaxy, history, kinematics, local_mesh, lowres, maps, scaling, slr_mesh, tree as tree_mod, uv
+from . import bh_logs, bh_population, catalog, contamination, coretrack, density, diagnostics, metallicity, evolution, galaxy, history, kinematics, local_mesh, lowres, maps, scaling, slr_mesh, tree as tree_mod, uv
 from .plotstyle import apply_style
 
 
@@ -179,10 +179,30 @@ def main(argv=None):
     # Galaxy-scale numbers come from Subfind; the snapshot particles are read
     # only for what Subfind does not measure.  Doing the catalogue first means
     # a run whose snapshots are too big to walk still gets its growth history.
+    # The target galaxy at each snapshot: followed through time from its DM core
+    # (coretrack), instead of "group 0's central", which can be another halo.
+    track = None
+    if snaps:
+        print("\n--- main-galaxy track (DM core) ---")
+        try:
+            track, tinfo = coretrack.load_or_build(out_dir, figdir)
+            if track is None:
+                print("  [run_all] no core track (%s) -- group 0's central is the target galaxy" % tinfo)
+            else:
+                reports.append(coretrack.summary_lines(tinfo))
+        except ValueError as exc:            # the run cannot be tracked (e.g. not group-ordered)
+            print("  [run_all] no core track: %s -- group 0's central is the target galaxy" % exc)
+            track = None
+        except Exception as exc:
+            print("  [run_all] core track failed: %s: %s -- group 0's central is the target galaxy"
+                  % (type(exc).__name__, exc))
+            track = None
+
     print("\n--- Subfind catalogue history ---")
     chist, mtree = None, None
     try:
-        chist = history.build_catalog_history(out_dir, nums=nums, use_inrad=not args.total_mass, units=units)
+        chist = history.build_catalog_history(out_dir, nums=nums, use_inrad=not args.total_mass, units=units,
+                                              track=track)
         units = chist.get("_units") or units
     except Exception as exc:
         print("  [run_all] catalogue history unavailable: %s" % exc)
@@ -205,7 +225,8 @@ def main(argv=None):
         print("\n--- building the snapshot history ---")
         try:
             hist = history.load_history(
-                out_dir, rebuild=args.rebuild, radii_kpc=radii, centre_prefer=centre_prefer, bh_id=args.bh_id, nums=nums
+                out_dir, rebuild=args.rebuild, radii_kpc=radii, centre_prefer=centre_prefer, bh_id=args.bh_id, nums=nums,
+                track=track,
             )
             if hist.get("_units") is not None:
                 units = hist["_units"]

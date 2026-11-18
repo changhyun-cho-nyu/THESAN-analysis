@@ -44,6 +44,7 @@ Module map
 ``kinematics``  spin directions of stars and gas, v/sigma of the bound stars (fig 22)
 ``contamination`` low-res (type 2, 3) particles around the target halo (report.txt)
 ``density``     stellar rho(<r), Sigma(<R) of the bound stars vs compact JWST systems (fig 23)
+``coretrack``   the main galaxy followed back in time from its DM core (figures/core_track.hdf5)
 ``metallicity`` gas MZR / DGR, stellar MZR, iron of the galaxy and the clean centrals (figs 05, 24, 25)
 ``plotstyle``   shared matplotlib style and helpers
 ``run_all``     driver that produces the whole figure set
@@ -63,6 +64,7 @@ __all__ = [
     "kinematics",
     "contamination",
     "density",
+    "coretrack",
     "metallicity",
     "local_mesh",
     "slr_mesh",

@@ -47,8 +47,12 @@ def build_history(
     bh_id=None,
     group_index=0,
     verbose=True,
+    track=None,
 ):
     """Measure every snapshot and return a dict of arrays keyed by quantity.
+
+    ``track`` ({snapshot: (subhalo, centre)}, from :mod:`coretrack`) names the
+    target galaxy at each snapshot it covers; elsewhere group 0's central is used.
 
     Snapshots that fail (missing file, no centre, corrupt chunk) are skipped
     with a message rather than aborting the whole walk -- a long zoom run
@@ -64,7 +68,8 @@ def build_history(
         try:
             snap = io.Snapshot(output_dir, n, units=units)
             units = units or snap.units
-            centre, cinfo = galaxy.auto_centre(snap, prefer=centre_prefer, bh_id=bh_id, group_index=group_index)
+            centre, cinfo = galaxy.auto_centre(snap, prefer=centre_prefer, bh_id=bh_id, group_index=group_index,
+                                               track=(track or {}).get(int(n)))
             if centre is None:
                 if verbose:
                     print("  [history] snap %3d: no centre (%s) -- skipped" % (n, cinfo.get("reason")))
@@ -176,10 +181,20 @@ def _code_fingerprint():
     return h.hexdigest()[:12]
 
 
-def _meta(radii_kpc, centre_prefer, bh_id, group_index):
+def _track_signature(track):
+    """Short hash of a core track ({snapshot: (subhalo, centre)}), or None."""
+    if not track:
+        return None
+    h = hashlib.sha1()
+    for s in sorted(track):
+        h.update(("%d:%d:%s;" % (s, track[s][0], np.round(np.asarray(track[s][1], dtype=np.float64), 4).tolist())).encode())
+    return h.hexdigest()[:12]
+
+
+def _meta(radii_kpc, centre_prefer, bh_id, group_index, track=None):
     return json.dumps(
         {"radii": list(map(float, radii_kpc)), "centre": list(centre_prefer), "bh_id": bh_id, "group": group_index,
-         "code": _code_fingerprint()},
+         "code": _code_fingerprint(), "track": _track_signature(track)},
         sort_keys=True,
     )
 
@@ -249,6 +264,7 @@ def load_history(
     group_index=0,
     nums=None,
     verbose=True,
+    track=None,
 ):
     """Return the history of snapshots ``nums`` (default: all on disk).
 
@@ -258,7 +274,7 @@ def load_history(
     ``rebuild=True`` ignores the cache entirely.
     """
     cache_path = cache_path or os.path.join(output_dir, "analysis_history.npz")
-    meta = _meta(radii_kpc, centre_prefer, bh_id, group_index)
+    meta = _meta(radii_kpc, centre_prefer, bh_id, group_index, track)
     wanted = io.available_snapshots(output_dir) if nums is None else sorted({int(n) for n in nums})
 
     cached, sigs = None, {}
@@ -286,7 +302,7 @@ def load_history(
     if todo:
         try:
             new = build_history(output_dir, nums=todo, radii_kpc=radii_kpc, centre_prefer=centre_prefer,
-                                bh_id=bh_id, group_index=group_index, verbose=verbose)
+                                bh_id=bh_id, group_index=group_index, verbose=verbose, track=track)
         except RuntimeError as exc:  # every snapshot in ``todo`` failed
             if verbose:
                 print("  [history] %s" % exc)
@@ -412,7 +428,7 @@ def cumulative_from_rate(t_gyr, rate_per_yr):
 
 
 def build_catalog_history(output_dir, nums=None, use_inrad=True, prefer="central", bh_id=None,
-                          units=None, verbose=True):
+                          units=None, verbose=True, track=None):
     """Time series of the target galaxy from the group catalogues alone.
 
     No particle data is read, so this costs seconds where :func:`build_history`
@@ -425,7 +441,9 @@ def build_catalog_history(output_dir, nums=None, use_inrad=True, prefer="central
     chosen component, anything spatially resolved.
 
     Returns the same dict-of-arrays shape as :func:`build_history`, with keys
-    named as :meth:`Catalog.properties` names them.
+    named as :meth:`Catalog.properties` names them.  ``track`` ({snapshot:
+    (subhalo, centre)}, :mod:`coretrack`) names the target galaxy where it
+    covers a snapshot.
     """
     from . import catalog as cat_mod
 
@@ -442,7 +460,7 @@ def build_catalog_history(output_dir, nums=None, use_inrad=True, prefer="central
                 if verbose:
                     print("  [catalog history] snap %3d: empty catalogue -- skipped" % n)
                 continue
-            i = cat.target_index(prefer=prefer)
+            i = int(track[n][0]) if (track and n in track) else cat.target_index(prefer=prefer)
             rec = cat.properties(i, use_inrad=use_inrad)
             if not rec:
                 continue
